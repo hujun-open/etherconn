@@ -419,6 +419,99 @@ func TestRUDPConn(t *testing.T) {
 	}
 }
 
+//v is the orignal value, vs is the orignal string
+//newIDs is the value for SetIDs, newv is the new VLANs after setIDs
+type testVLANsCase struct {
+	v          VLANs
+	vs         string
+	newIDs     []uint16
+	newv       VLANs
+	shouldFail bool
+}
+
+func TestVLANs(t *testing.T) {
+	testCaseList := []testVLANsCase{
+		testVLANsCase{
+			v: VLANs{
+				&VLAN{
+					ID:        100,
+					EtherType: 0x8100,
+				},
+				&VLAN{
+					ID:        200,
+					EtherType: 0x8200,
+				},
+			},
+			vs:     "|100|200",
+			newIDs: []uint16{111, 222},
+			newv: VLANs{
+				&VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+				&VLAN{
+					ID:        222,
+					EtherType: 0x8200,
+				},
+			},
+		},
+
+		testVLANsCase{
+			v: VLANs{
+				&VLAN{
+					ID:        100,
+					EtherType: 0x8100,
+				},
+				&VLAN{
+					ID:        200,
+					EtherType: 0x8200,
+				},
+			},
+			vs:     "|100|200",
+			newIDs: []uint16{111, 222},
+			newv: VLANs{
+				&VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+				&VLAN{
+					ID:        220,
+					EtherType: 0x8200,
+				},
+			},
+			shouldFail: true,
+		},
+	}
+	testFunc := func(c testVLANsCase) error {
+		if c.v.String() != c.vs {
+			return fmt.Errorf("c.v string %v is different from expected %v", c.v.String(), c.vs)
+		}
+		err := c.v.SetIDs(c.newIDs)
+		if err != nil {
+			return err
+		}
+		if !c.newv.Equal(c.v) {
+			return fmt.Errorf("c.newv %v is different from expected %v", c.v, c.newv)
+		}
+		return nil
+	}
+	for i, c := range testCaseList {
+		err := testFunc(c)
+		if err != nil {
+			if c.shouldFail {
+				fmt.Printf("case %d failed as expected,%v\n", i, err)
+			} else {
+				t.Fatalf("case %d failed,%v", i, err)
+			}
+		} else {
+			if c.shouldFail {
+				t.Fatalf("case %d succeed but should fail", i)
+			}
+		}
+	}
+
+}
+
 func TestMain(m *testing.M) {
 	flag.Parse()
 	if *testifA == "" || *testifB == "" {

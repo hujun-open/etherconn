@@ -154,6 +154,78 @@ type VLAN struct {
 	EtherType uint16
 }
 
+type VLANs []*VLAN
+
+//String return a string representation
+func (vlans VLANs) String() string {
+	s := ""
+	for _, v := range vlans {
+		s += fmt.Sprintf("|%d", v.ID)
+	}
+	return s
+}
+
+//IDs return a VLAN IDs as a slice of uint16
+func (vlans VLANs) IDs() []uint16 {
+	r := []uint16{}
+	for _, v := range vlans {
+		r = append(r, v.ID)
+	}
+	return r
+}
+
+//SetIDs set VLAN ID with the specified uint16 slice
+func (vlans VLANs) SetIDs(ids []uint16) error {
+	if len(vlans) != len(ids) {
+		return fmt.Errorf("the number of specified ID is different from what is needed")
+	}
+	for i, id := range ids {
+		vlans[i].ID = id
+	}
+	return nil
+}
+
+//Clone return a deep copy
+func (vlans VLANs) Clone() VLANs {
+	r := VLANs{}
+	for _, v := range vlans {
+		r = append(r, &VLAN{
+			ID:        v.ID,
+			EtherType: v.EtherType,
+		},
+		)
+	}
+	return r
+}
+
+//Copy copy value of lvans2 to vlans
+func (vlans *VLANs) Copy(vlans2 VLANs) {
+	*vlans = VLANs{}
+	for _, v := range vlans2 {
+		*vlans = append(*vlans, &VLAN{
+			ID:        v.ID,
+			EtherType: v.EtherType,
+		})
+	}
+
+}
+
+//Equal returns true if vlans == vlans2
+func (vlans VLANs) Equal(vlans2 VLANs) bool {
+	if len(vlans) != len(vlans2) {
+		return false
+	}
+	for i := range vlans {
+		if vlans[i].ID != vlans2[i].ID {
+			return false
+		}
+		if vlans[i].EtherType != vlans2[i].EtherType {
+			return false
+		}
+	}
+	return true
+}
+
 // L2Endpoint represents a layer2 endpoint that send/receives Ethernet frame
 type L2Endpoint struct {
 	HwAddr net.HardwareAddr
@@ -167,7 +239,7 @@ func newL2Endpoint() *L2Endpoint {
 }
 
 // NewL2EndpointFromMACVLAN creates a new L2Endpoint from mac and vlans
-func NewL2EndpointFromMACVLAN(mac net.HardwareAddr, vlans []*VLAN) *L2Endpoint {
+func NewL2EndpointFromMACVLAN(mac net.HardwareAddr, vlans VLANs) *L2Endpoint {
 	r := newL2Endpoint()
 	copy(r.HwAddr, mac)
 	r.VLANs = []uint16{}
@@ -685,7 +757,7 @@ type EtherConn struct {
 	l2EP              *L2Endpoint
 	relay             PacketRelay
 	ownMAC            net.HardwareAddr
-	vlans             []*VLAN
+	vlans             VLANs
 	sendChan          chan []byte
 	recvChan          chan *RelayReceival
 	readDeadline      time.Time
@@ -700,14 +772,10 @@ type EtherConnOption func(ec *EtherConn)
 
 // WithVLANs specifies VLAN(s) as part of EtherConn's L2Endpoint.
 // by default, there is no VLAN.
-func WithVLANs(vlans []*VLAN) EtherConnOption {
+func WithVLANs(vlans VLANs) EtherConnOption {
 	return func(ec *EtherConn) {
-		ec.l2EP.VLANs = []uint16{}
-		for _, v := range vlans {
-			ec.l2EP.VLANs = append(ec.l2EP.VLANs, v.ID)
-		}
-		ec.vlans = make([]*VLAN, len(vlans))
-		copy(ec.vlans, vlans)
+		ec.l2EP.VLANs = vlans.IDs()
+		ec.vlans.Copy(vlans)
 	}
 }
 
