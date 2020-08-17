@@ -9,27 +9,53 @@ package etherconn
 import (
 	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"math/rand"
 	"net"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/myaddr"
+	"github.com/vishvananda/netlink"
 )
 
-var testifA = flag.String("testifA", "", "test interface A")
-var testifB = flag.String("testifB", "", "test interface B")
+const (
+	testifA = "A"
+	testifB = "B"
+)
+
+func testCreateVETHLink(a, b string) (netlink.Link, netlink.Link, error) {
+	linka := new(netlink.Veth)
+	linka.Name = a
+	linka.PeerName = b
+	netlink.LinkDel(linka)
+	err := netlink.LinkAdd(linka)
+	if err != nil {
+		return nil, nil, err
+	}
+	linkb, err := netlink.LinkByName(b)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = netlink.LinkSetUp(linka)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = netlink.LinkSetUp(linkb)
+	if err != nil {
+		return nil, nil, err
+	}
+	return linka, linkb, nil
+}
 
 type testEtherConnEndpoint struct {
 	mac           net.HardwareAddr
 	vlans         []*VLAN
 	dstMACFlag    int
 	recvMulticast bool
+	filter        string
 }
 
 type testEtherConnSingleCase struct {
@@ -102,6 +128,39 @@ const (
 
 func TestEtherConn(t *testing.T) {
 	testCaseList := []testEtherConnSingleCase{
+		//good case, no Q
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac:   net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{},
+			},
+			B: testEtherConnEndpoint{
+				mac:   net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{},
+			},
+		},
+		//good case, dot1q
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+			},
+			B: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+			},
+		},
+		//good case, qinq
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -130,6 +189,38 @@ func TestEtherConn(t *testing.T) {
 				},
 			},
 		},
+		//negtive case, blocked by filter
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+					&VLAN{
+						ID:        222,
+						EtherType: 0x8100,
+					},
+				},
+			},
+			B: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+					&VLAN{
+						ID:        222,
+						EtherType: 0x8100,
+					},
+				},
+				filter: "vlan 333",
+			},
+			shouldFail: true,
+		},
+
 		//negative case, different vlan
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
@@ -229,17 +320,30 @@ func TestEtherConn(t *testing.T) {
 	}
 
 	testFunc := func(c testEtherConnSingleCase) error {
-		peerA, err := NewRawSocketRelay(context.Background(), *testifA, WithDebug(true))
+		_, _, err := testCreateVETHLink(testifA, testifB)
+		if err != nil {
+			return err
+		}
+		filterstr := "udp or (vlan and udp)"
+		if c.A.filter != "" {
+			filterstr = c.A.filter
+		}
+		peerA, err := NewRawSocketRelay(context.Background(), testifA, WithDebug(true), WithBPFFilter(filterstr))
 		if err != nil {
 			return err
 		}
 		defer peerA.Stop()
-		peerB, err := NewRawSocketRelay(context.Background(), *testifB, WithDebug(true))
+		filterstr = "udp or (vlan and udp)"
+		if c.B.filter != "" {
+			filterstr = c.B.filter
+		}
+		peerB, err := NewRawSocketRelay(context.Background(), testifB, WithDebug(true), WithBPFFilter(filterstr))
 		if err != nil {
 			return err
 		}
 		defer peerB.Stop()
 		econnA := NewEtherConn(c.A.mac, peerA, WithVLANs(c.A.vlans))
+
 		econnB := NewEtherConn(c.B.mac, peerB, WithVLANs(c.B.vlans), WithRecvMulticast(c.B.recvMulticast))
 		maxSize := 1000
 		for i := 0; i < 10; i++ {
@@ -347,12 +451,16 @@ func TestRUDPConn(t *testing.T) {
 	}
 
 	testFunc := func(c testRUDPConnSingleCase) error {
-		peerA, err := NewRawSocketRelay(context.Background(), *testifA, WithDebug(true))
+		_, _, err := testCreateVETHLink(testifA, testifB)
+		if err != nil {
+			return err
+		}
+		peerA, err := NewRawSocketRelay(context.Background(), testifA, WithDebug(true))
 		if err != nil {
 			return err
 		}
 		defer peerA.Stop()
-		peerB, err := NewRawSocketRelay(context.Background(), *testifB, WithDebug(true))
+		peerB, err := NewRawSocketRelay(context.Background(), testifB, WithDebug(true))
 		if err != nil {
 			return err
 		}
@@ -509,14 +617,4 @@ func TestVLANs(t *testing.T) {
 		}
 	}
 
-}
-
-func TestMain(m *testing.M) {
-	flag.Parse()
-	if *testifA == "" || *testifB == "" {
-		fmt.Printf("error: two test interface name must be specified")
-		os.Exit(1)
-	}
-	result := m.Run()
-	os.Exit(result)
 }
