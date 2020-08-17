@@ -104,7 +104,7 @@ func TestEtherConn(t *testing.T) {
 	testCaseList := []testEtherConnSingleCase{
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
-				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
 				vlans: []*VLAN{
 					&VLAN{
 						ID:        100,
@@ -117,7 +117,7 @@ func TestEtherConn(t *testing.T) {
 				},
 			},
 			B: testEtherConnEndpoint{
-				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
 				vlans: []*VLAN{
 					&VLAN{
 						ID:        100,
@@ -240,14 +240,12 @@ func TestEtherConn(t *testing.T) {
 		}
 		defer peerB.Stop()
 		econnA := NewEtherConn(c.A.mac, peerA, WithVLANs(c.A.vlans))
-		econnB := NewEtherConn(c.B.mac, peerB, WithVLANs(c.B.vlans), WithRecvMulticasat(c.B.recvMulticast))
+		econnB := NewEtherConn(c.B.mac, peerB, WithVLANs(c.B.vlans), WithRecvMulticast(c.B.recvMulticast))
 		maxSize := 1000
 		for i := 0; i < 10; i++ {
 			pktSize := maxSize - rand.Intn(maxSize-63)
 
 			p := testGenDummyIPbytes(pktSize, i%2 == 0)
-			fmt.Printf("send packet with length %d\n", len(p))
-
 			var dst net.HardwareAddr
 			switch c.A.dstMACFlag {
 			case macTestCorrect:
@@ -257,13 +255,14 @@ func TestEtherConn(t *testing.T) {
 			default:
 				dst = net.HardwareAddr{0, 0, 0, 0, 0, 0}
 			}
+			fmt.Printf("send packet with length %d to %v\n", len(p), dst)
 			_, err := econnA.WriteIPPktTo(p, dst)
 			if err != nil {
 				return err
 			}
 			rcvdbuf := make([]byte, maxSize+100)
 			//set read timeout
-			err = econnB.SetReadDeadline(time.Now().Add(time.Second))
+			err = econnB.SetReadDeadline(time.Now().Add(3 * time.Second))
 			if err != nil {
 				return err
 			}
@@ -370,7 +369,7 @@ func TestRUDPConn(t *testing.T) {
 			}
 		}
 		econnA := NewEtherConn(c.AEther.mac, peerA, WithVLANs(c.AEther.vlans))
-		econnB := NewEtherConn(c.BEther.mac, peerB, WithVLANs(c.BEther.vlans), WithRecvMulticasat(c.BEther.recvMulticast))
+		econnB := NewEtherConn(c.BEther.mac, peerB, WithVLANs(c.BEther.vlans), WithRecvMulticast(c.BEther.recvMulticast))
 		rudpA, err := NewRUDPConn(myaddr.GenConnectionAddrStr("", c.AIP, c.APort), econnA, WithResolveNextHopMacFunc(resolvMacFunc))
 		if err != nil {
 			return err

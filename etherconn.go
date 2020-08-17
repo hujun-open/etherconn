@@ -122,6 +122,8 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/afpacket"
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 )
 
@@ -154,6 +156,7 @@ type VLAN struct {
 	EtherType uint16
 }
 
+// VLANs is a slice of VLAN
 type VLANs []*VLAN
 
 //String return a string representation
@@ -349,8 +352,8 @@ func (l2e *L2Endpoint) String() (s string) {
 
 // RelayReceival is the what PacketRelay received and parsed
 type RelayReceival struct {
-	//RemoteL2EP is the remote L2Endpoint
-	RemoteL2EP *L2Endpoint
+	//RemoteMAC is the remote MAC address
+	RemoteMAC net.HardwareAddr
 	// EtherBytes is the Ethernet frame bytes
 	EtherBytes []byte
 	// EtherPayloadBytes is the Ethernet payload bytes within the EtherBytes,
@@ -462,6 +465,8 @@ type RawSocketRelay struct {
 	stats                *RelayPacketStats
 	logger               *log.Logger
 	etherTypeList        map[uint16]struct{}
+	ifName               string
+	bpfFilter            *string
 }
 
 // RelayOption is a function use to provide customized option when creating RawSocketRelay
@@ -501,6 +506,14 @@ func WithMaxEtherFrameSize(size uint) RelayOption {
 	}
 }
 
+// WithBPFFilter set BPF filter
+func WithBPFFilter(filter string) RelayOption {
+	return func(relay *RawSocketRelay) {
+		relay.bpfFilter = new(string)
+		*relay.bpfFilter = filter
+	}
+}
+
 // WithRecvTimeout specifies the receive timeout for RawSocketRelay
 func WithRecvTimeout(t time.Duration) RelayOption {
 	return func(relay *RawSocketRelay) {
@@ -534,6 +547,7 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 		return nil, fmt.Errorf("failed to set %v to Promisc mode,%w", ifname, err)
 
 	}
+	r.ifName = ifname
 	r.recvTimeout = DefaultRelayRecvTimeout
 	r.conn, err = afpacket.NewTPacket(
 		afpacket.OptInterface(ifname),
@@ -559,19 +573,33 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 	r.stats = newRelayPacketStats()
 	r.wg = new(sync.WaitGroup)
 	r.wg.Add(2)
+	r.bpfFilter = nil
 	for _, op := range options {
 		op(r)
 	}
+	if r.bpfFilter != nil {
+		if *r.bpfFilter != "" {
+			err = r.setBPFFilter(*r.bpfFilter)
+		}
+	} else {
+		err = r.setBPFFilter(buildPCAPFilterStrForEtherType(r.etherTypeList))
+	}
+	if err != nil {
+		return nil, err
+	}
+
 	go r.recv(ctx)
 	go r.send(ctx)
 	return r, nil
 }
 
-func (rsr *RawSocketRelay) log(msg string) {
-	_, fname, linenum, _ := runtime.Caller(1)
-	if rsr.logger != nil {
-		rsr.logger.Print(fmt.Sprintf("%v:%v:%v", filepath.Base(fname), linenum, msg))
+func (rsr *RawSocketRelay) log(format string, a ...interface{}) {
+	if rsr.logger == nil {
+		return
 	}
+	msg := fmt.Sprintf(format, a...)
+	_, fname, linenum, _ := runtime.Caller(1)
+	rsr.logger.Print(fmt.Sprintf("%v:%v:%v:%v", filepath.Base(fname), linenum, rsr.ifName, msg))
 }
 
 // Register implements PacketRelay interface;
@@ -614,15 +642,15 @@ func (rsr *RawSocketRelay) send(ctx context.Context) {
 }
 
 func checkPacketBytes(p []byte) error {
-	if len(p) < 60 {
-		return fmt.Errorf("ethernet frame size is smaller than 60B")
+	if len(p) < 14 {
+		return fmt.Errorf("ethernet frame size is smaller than 14B")
 	}
 	return nil
 }
 
-func (rsr *RawSocketRelay) sendToChanWithCounter(receival *RelayReceival, rl2 *L2Endpoint, ch chan *RelayReceival, p gopacket.Packet, counter, fullcounter *uint64) {
+func (rsr *RawSocketRelay) sendToChanWithCounter(receival *RelayReceival, rmac net.HardwareAddr, ch chan *RelayReceival, p gopacket.Packet, counter, fullcounter *uint64) {
 	fullcounted := false
-	receival.RemoteL2EP = rl2
+	receival.RemoteMAC = rmac
 L1:
 	for _, l := range p.Layers() {
 		switch l.LayerType() {
@@ -654,7 +682,9 @@ L1:
 		}
 
 	}
-
+	if len(receival.EtherPayloadBytes) == 0 {
+		return
+	}
 	for { //keep sending until pkt is sent to channel
 		select {
 		case ch <- receival:
@@ -700,16 +730,14 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 			continue
 		}
 		gpacket := gopacket.NewPacket(b[:ci.CaptureLength], layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
-		l2ep, _ := getEtherAdrrInfoFromPacketWithAUXData(gpacket, false, ci.AncillaryData)
+		l2ep, rmac := getEtherAdrrInfoFromPacketWithAUXData(gpacket, false, ci.AncillaryData)
 		receival := newRelayReceival()
-
 		if rcvchan := rsr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
 			receival.EtherBytes = b[:ci.CaptureLength]
 			//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
-			go rsr.sendToChanWithCounter(receival, l2ep, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+			go rsr.sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 		} else {
 			if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
-
 				mList := rsr.multicastList.GetList()
 				if len(mList) > 0 {
 					for _, mrcvchan := range mList {
@@ -717,9 +745,10 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 						copy(newbuf, b[:ci.CaptureLength])
 						receival.EtherBytes = newbuf
 						//TODO: might need also a new gpacket here
-						go rsr.sendToChanWithCounter(receival, l2ep, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
+						go rsr.sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
 					}
 				} else {
+					rsr.log("ignored a multicast pkt")
 					atomic.AddUint64(rsr.stats.RxMulticastIgnored, 1)
 				}
 			} else { //unicast but can't find reciver
@@ -747,6 +776,11 @@ func (rsr *RawSocketRelay) Stop() {
 	case <-ticker.C:
 	}
 	rsr.log(fmt.Sprintf("RawSocketRelay stats:\n%v", rsr.stats.String()))
+	_, rawstat, err := rsr.conn.SocketStats()
+	if err != nil {
+		rsr.log("failed to get raw stats %v", err)
+	}
+	rsr.log("raw stats:%+v", rawstat)
 }
 
 // EtherConn send/recv Ethernet payload like IP packet with
@@ -779,8 +813,8 @@ func WithVLANs(vlans VLANs) EtherConnOption {
 	}
 }
 
-// WithRecvMulticasat allow/disallow EtherConn to receive multicast/broadcast Ethernet traffic
-func WithRecvMulticasat(recv bool) EtherConnOption {
+// WithRecvMulticast allow/disallow EtherConn to receive multicast/broadcast Ethernet traffic
+func WithRecvMulticast(recv bool) EtherConnOption {
 	return func(ec *EtherConn) {
 		ec.recvMulticast = recv
 	}
@@ -981,7 +1015,7 @@ func (ec *EtherConn) ReadPkt() ([]byte, net.HardwareAddr, error) {
 		return nil, nil, err
 	}
 
-	return receival.EtherPayloadBytes, receival.RemoteL2EP.HwAddr, nil
+	return receival.EtherPayloadBytes, receival.RemoteMAC, nil
 }
 
 // Close implements net.PacketConn interface, deregister itself from PacketRelay
@@ -1203,4 +1237,43 @@ func (rps RelayPacketStats) String() string {
 		rs += fmt.Sprintf("%v:%v\n", val.Type().Field(i).Name, reflect.Indirect(val.FieldByIndex([]int{i})).Interface().(uint64))
 	}
 	return rs
+}
+
+// buildPCAPFilterStrForEtherType return a PCAP filter string to filter
+// all EtherType in etypes, include no tag, one tag and two tag
+func buildPCAPFilterStrForEtherType(etypes map[uint16]struct{}) string {
+	s := ""
+	i := 0
+	for t := range etypes {
+		s += fmt.Sprintf("0x%x", t)
+		if i < len(etypes)-1 {
+			s += " or "
+		}
+		i++
+	}
+	//NOTE: it seems the order of these 2 parts are important, otherwise qinq won't be capatured
+	return fmt.Sprintf("(ether proto %s) or  (vlan and ether proto %s)", s, s)
+}
+
+// setBPFFilter translates a BPF filter string into BPF RawInstruction and applies them.
+func (rsr *RawSocketRelay) setBPFFilter(filter string) (err error) {
+	rsr.log("set BPF filter to %v", filter)
+	pcapBPF, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, int(rsr.maxEtherFrameSize), filter)
+	if err != nil {
+		return err
+	}
+	bpfIns := []bpf.RawInstruction{}
+	for _, ins := range pcapBPF {
+		bpfIns2 := bpf.RawInstruction{
+			Op: ins.Code,
+			Jt: ins.Jt,
+			Jf: ins.Jf,
+			K:  ins.K,
+		}
+		bpfIns = append(bpfIns, bpfIns2)
+	}
+	// if relay.conn.SetBPF(bpfIns); err != nil {
+	// 	return err
+	// }
+	return rsr.conn.SetBPF(bpfIns)
 }
