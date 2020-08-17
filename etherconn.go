@@ -506,7 +506,9 @@ func WithMaxEtherFrameSize(size uint) RelayOption {
 	}
 }
 
-// WithBPFFilter set BPF filter
+// WithBPFFilter set BPF filter, which is a pcap filter string;
+// if filter is an empty string, then it means no filter;
+// by default, Relay will have a filter only allow traffic with specified EtherType.
 func WithBPFFilter(filter string) RelayOption {
 	return func(relay *RawSocketRelay) {
 		relay.bpfFilter = new(string)
