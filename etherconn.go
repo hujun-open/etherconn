@@ -448,6 +448,8 @@ type PacketRelay interface {
 	Deregister(k L2EndpointKey)
 	// Stop stops the forwarding of PacketRelay
 	Stop()
+	//IfName return binding interface name
+	IfName() string
 }
 
 // RawSocketRelay implements PacketRelay interface
@@ -649,7 +651,9 @@ func checkPacketBytes(p []byte) error {
 	}
 	return nil
 }
-
+func (rsr *RawSocketRelay) IfName() string {
+	return rsr.ifName
+}
 func (rsr *RawSocketRelay) sendToChanWithCounter(receival *RelayReceival, rmac net.HardwareAddr, ch chan *RelayReceival, p gopacket.Packet, counter, fullcounter *uint64) {
 	fullcounted := false
 	receival.RemoteMAC = rmac
@@ -847,6 +851,17 @@ func (ec *EtherConn) LocalAddr() *L2Endpoint {
 	return ec.l2EP
 }
 
+// // Deadlines returns ReadDealine and WriteDeadline
+// func (ec *EtherConn) Deadlines() (r w time.Time) {
+// 	ec.readDeadlineLock.RLock()
+// 	r=ec.readDeadline
+// 	ec.readDeadlineLock.RUnlock()
+// 	ec.writeDeadlineLock.RLock()
+// 	w=ec.writeDeadline
+// 	ec.writeDeadlineLock.RUnlock()
+// 	return
+// }
+
 // SetReadDeadline implements net.PacketConn interface
 func (ec *EtherConn) SetReadDeadline(t time.Time) error {
 	ec.readDeadlineLock.Lock()
@@ -865,12 +880,8 @@ func (ec *EtherConn) SetWriteDeadline(t time.Time) error {
 
 // SetDeadline implements net.PacketConn interface
 func (ec *EtherConn) SetDeadline(t time.Time) error {
-	ec.writeDeadlineLock.Lock()
-	ec.writeDeadline = t
-	ec.writeDeadlineLock.Unlock()
-	ec.writeDeadlineLock.Lock()
-	ec.writeDeadline = t
-	ec.writeDeadlineLock.Unlock()
+	ec.SetReadDeadline(t)
+	ec.SetWriteDeadline(t)
 	return nil
 }
 
