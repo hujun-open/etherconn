@@ -141,6 +141,8 @@ const (
 var (
 	// ErrTimeOut is the error returned when opeartion timeout
 	ErrTimeOut = fmt.Errorf("timeout")
+	// ErrRelayStopped is the error returned when relay already stopped
+	ErrRelayStopped = fmt.Errorf("relay stopped")
 	// BroadCastMAC is the broadcast MAC address
 	BroadCastMAC = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 )
@@ -407,6 +409,14 @@ func newchanMap() *chanMap {
 	return r
 }
 
+func (cm *chanMap) CloseAll() {
+	cm.lock.Lock()
+	for _, c := range cm.cmlist {
+		close(c)
+	}
+	cm.lock.Unlock()
+}
+
 func (cm *chanMap) Set(k L2EndpointKey, v chan *RelayReceival) {
 	cm.lock.Lock()
 	cm.cmlist[k] = v
@@ -442,8 +452,9 @@ type PacketRelay interface {
 	// it returns two channels:
 	// recv is the channel used to recive;
 	// send is the channel used to send;
+	// stop is a channel that will be closed when PacketRelay stops sending;
 	// if recvMulticast is true, then multicast ethernet traffic will be recvied as well
-	Register(k L2EndpointKey, recvMulticast bool) (recv chan *RelayReceival, send chan []byte)
+	Register(k L2EndpointKey, recvMulticast bool) (recv chan *RelayReceival, send chan []byte, stop chan struct{})
 	// Deregister removes L2EndpointKey from registration
 	Deregister(k L2EndpointKey)
 	// Stop stops the forwarding of PacketRelay
@@ -456,6 +467,7 @@ type PacketRelay interface {
 type RawSocketRelay struct {
 	conn                 *afpacket.TPacket
 	toSendChan           chan []byte
+	stopToSendChan       chan struct{}
 	recvList             *chanMap
 	wg                   *sync.WaitGroup
 	cancelFunc           context.CancelFunc
@@ -565,6 +577,7 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rawsocketrelay,%w", err)
 	}
+	r.stopToSendChan = make(chan struct{})
 	r.etherTypeList = map[uint16]struct{}{0x0800: exists, 0x86dd: exists}
 	r.perClntRecvChanDepth = DefaultPerClntRecvChanDepth
 	r.sendChanDepth = DefaultSendChanDepth
@@ -608,17 +621,17 @@ func (rsr *RawSocketRelay) log(format string, a ...interface{}) {
 
 // Register implements PacketRelay interface;
 // if mac is already registered, then returns its corresponding channel.
-func (rsr *RawSocketRelay) Register(k L2EndpointKey, recvMulticast bool) (chan *RelayReceival, chan []byte) {
+func (rsr *RawSocketRelay) Register(k L2EndpointKey, recvMulticast bool) (chan *RelayReceival, chan []byte, chan struct{}) {
 	ch := rsr.recvList.Get(k)
 	if ch != nil {
-		return ch, rsr.toSendChan
+		return ch, rsr.toSendChan, rsr.stopToSendChan
 	}
 	ch = make(chan *RelayReceival, rsr.perClntRecvChanDepth)
 	rsr.recvList.Set(k, ch)
 	if recvMulticast {
 		rsr.multicastList.Set(k, ch)
 	}
-	return ch, rsr.toSendChan
+	return ch, rsr.toSendChan, rsr.stopToSendChan
 }
 
 // Deregister implements PacketRelay interface;
@@ -629,6 +642,7 @@ func (rsr *RawSocketRelay) Deregister(k L2EndpointKey) {
 
 func (rsr *RawSocketRelay) send(ctx context.Context) {
 	defer rsr.wg.Done()
+	defer close(rsr.stopToSendChan)
 	for {
 		select {
 		case <-ctx.Done():
@@ -713,6 +727,7 @@ func (rsr *RawSocketRelay) GetStats() *RelayPacketStats {
 
 func (rsr *RawSocketRelay) recv(ctx context.Context) {
 	defer rsr.wg.Done()
+	defer rsr.recvList.CloseAll()
 	for {
 		b := make([]byte, rsr.maxEtherFrameSize)
 		ci, err := rsr.conn.ReadPacketDataTo(b)
@@ -800,6 +815,7 @@ type EtherConn struct {
 	vlans             VLANs
 	sendChan          chan []byte
 	recvChan          chan *RelayReceival
+	stopSendChan      chan struct{}
 	readDeadline      time.Time
 	readDeadlineLock  *sync.RWMutex
 	writeDeadline     time.Time
@@ -839,7 +855,7 @@ func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnO
 	for _, option := range options {
 		option(r)
 	}
-	r.recvChan, r.sendChan = relay.Register(r.l2EP.GetKey(), r.recvMulticast)
+	r.recvChan, r.sendChan, r.stopSendChan = relay.Register(r.l2EP.GetKey(), r.recvMulticast)
 	r.readDeadlineLock = new(sync.RWMutex)
 	r.writeDeadlineLock = new(sync.RWMutex)
 	r.relay = relay
@@ -952,14 +968,26 @@ func (ec *EtherConn) WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr)
 	ec.writeDeadlineLock.RUnlock()
 	d := deadline.Sub(time.Now())
 	timeout := false
+	select {
+	case <-ec.stopSendChan:
+		return 0, ErrRelayStopped
+	default:
+	}
 	if d > 0 {
 		select {
+		case <-ec.stopSendChan:
+			return 0, ErrRelayStopped
 		case <-time.After(d):
 			timeout = true
 		case ec.sendChan <- fullp:
 		}
 	} else {
-		ec.sendChan <- fullp
+		select {
+		case ec.sendChan <- fullp:
+		case <-ec.stopSendChan:
+			return 0, ErrRelayStopped
+		}
+
 	}
 	if timeout {
 		return 0, ErrTimeOut
