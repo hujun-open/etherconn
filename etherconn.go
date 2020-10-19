@@ -665,6 +665,7 @@ func checkPacketBytes(p []byte) error {
 	}
 	return nil
 }
+
 func (rsr *RawSocketRelay) IfName() string {
 	return rsr.ifName
 }
@@ -727,7 +728,7 @@ func (rsr *RawSocketRelay) GetStats() *RelayPacketStats {
 
 func (rsr *RawSocketRelay) recv(ctx context.Context) {
 	defer rsr.wg.Done()
-	defer rsr.recvList.CloseAll()
+	// defer rsr.recvList.CloseAll() //TODO: this might create race issue, given sendToChanWithCounter will also use the ch, does this really need to be closed?
 	for {
 		b := make([]byte, rsr.maxEtherFrameSize)
 		ci, err := rsr.conn.ReadPacketDataTo(b)
