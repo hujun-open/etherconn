@@ -352,6 +352,19 @@ func (l2e *L2Endpoint) String() (s string) {
 	return fmt.Sprintf("%v&%v", l2e.Network(), l2e.GetKey().String())
 }
 
+const DefaultVLANEtype = 0x8100
+
+// GetVLANs return an instance of VLANs with VLAN ethernet type set as DefaultVLANEtype
+func (l2e *L2Endpoint) GetVLANsWithDefaultEtype() (r VLANs) {
+	for _, vid := range l2e.VLANs {
+		r = append(r, &VLAN{
+			ID:        vid,
+			EtherType: DefaultVLANEtype,
+		})
+	}
+	return
+}
+
 // RelayReceival is the what PacketRelay received and parsed
 type RelayReceival struct {
 	//RemoteMAC is the remote MAC address
@@ -455,6 +468,10 @@ type PacketRelay interface {
 	// stop is a channel that will be closed when PacketRelay stops sending;
 	// if recvMulticast is true, then multicast ethernet traffic will be recvied as well
 	Register(k L2EndpointKey, recvMulticast bool) (recv chan *RelayReceival, send chan []byte, stop chan struct{})
+	// RegisterDefault return default receive channel,
+	// meaning a received pkt doesn't match any other specific EtherConn registered with L2Endpointkey will be send to this channel;
+	// multicast traffic will be also sent to this channel;
+	RegisterDefault() (recv chan *RelayReceival, send chan []byte, stop chan struct{})
 	// Deregister removes L2EndpointKey from registration
 	Deregister(k L2EndpointKey)
 	// Stop stops the forwarding of PacketRelay
@@ -481,6 +498,8 @@ type RawSocketRelay struct {
 	etherTypeList        map[uint16]struct{}
 	ifName               string
 	bpfFilter            *string
+	defaultRecvChan      chan *RelayReceival
+	mirrorToDefault      bool
 }
 
 // RelayOption is a function use to provide customized option when creating RawSocketRelay
@@ -548,6 +567,17 @@ func WithEtherType(etypes []uint16) RelayOption {
 	}
 }
 
+// WithDefaultReceival creates a default receiving channel,
+// all received pkt doesn't match any explicit EtherConn, will be sent to this channel;
+// using RegisterDefault to get the default receiving channel.
+// if mirroring is true, then every received pkt will be sent to this channel.
+func WithDefaultReceival(mirroring bool) RelayOption {
+	return func(relay *RawSocketRelay) {
+		relay.defaultRecvChan = make(chan *RelayReceival, relay.perClntRecvChanDepth)
+		relay.mirrorToDefault = mirroring
+	}
+}
+
 var exists = struct{}{}
 
 // NewRawSocketRelay creates a new RawSocketRelay instance,
@@ -585,12 +615,14 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 	var ctx context.Context
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	r.toSendChan = make(chan []byte, r.sendChanDepth)
+
 	r.recvList = newchanMap()
 	r.multicastList = newchanMap()
 	r.stats = newRelayPacketStats()
 	r.wg = new(sync.WaitGroup)
 	r.wg.Add(2)
 	r.bpfFilter = nil
+	r.defaultRecvChan = nil
 	for _, op := range options {
 		op(r)
 	}
@@ -632,6 +664,10 @@ func (rsr *RawSocketRelay) Register(k L2EndpointKey, recvMulticast bool) (chan *
 		rsr.multicastList.Set(k, ch)
 	}
 	return ch, rsr.toSendChan, rsr.stopToSendChan
+}
+
+func (rsr *RawSocketRelay) RegisterDefault() (chan *RelayReceival, chan []byte, chan struct{}) {
+	return rsr.defaultRecvChan, rsr.toSendChan, rsr.stopToSendChan
 }
 
 // Deregister implements PacketRelay interface;
@@ -732,6 +768,7 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 	for {
 		b := make([]byte, rsr.maxEtherFrameSize)
 		ci, err := rsr.conn.ReadPacketDataTo(b)
+
 		if err != nil {
 			if errors.Is(err, afpacket.ErrTimeout) {
 				select {
@@ -758,9 +795,13 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 			receival.EtherBytes = b[:ci.CaptureLength]
 			//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
 			go rsr.sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+			if rsr.mirrorToDefault && rsr.defaultRecvChan != nil {
+				go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+			}
 		} else {
 			if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
 				mList := rsr.multicastList.GetList()
+				zeroMList := false
 				if len(mList) > 0 {
 					for _, mrcvchan := range mList {
 						newbuf := make([]byte, ci.CaptureLength)
@@ -770,12 +811,26 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 						go rsr.sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
 					}
 				} else {
-					rsr.log("ignored a multicast pkt")
-					atomic.AddUint64(rsr.stats.RxMulticastIgnored, 1)
+					zeroMList = true
+				}
+				if rsr.defaultRecvChan != nil {
+					receival.EtherBytes = b[:ci.CaptureLength]
+					go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+
+				} else {
+					if zeroMList {
+						rsr.log("ignored a multicast pkt")
+						atomic.AddUint64(rsr.stats.RxMulticastIgnored, 1)
+					}
 				}
 			} else { //unicast but can't find reciver
-				rsr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
-				atomic.AddUint64(rsr.stats.RxMiss, 1)
+				if rsr.defaultRecvChan != nil {
+					receival.EtherBytes = b[:ci.CaptureLength]
+					go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+				} else {
+					rsr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
+					atomic.AddUint64(rsr.stats.RxMiss, 1)
+				}
 			}
 		}
 	}
@@ -784,8 +839,9 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 // Stop implements PacketRelay interface
 func (rsr *RawSocketRelay) Stop() {
 	rsr.cancelFunc()
-	//this ticker is to make sure relay stop in case poll timeout is not supported by kernel(need TPacketV3)
-	ticker := time.NewTicker(rsr.recvTimeout + time.Second)
+	// this ticker is to make sure relay stop in case poll timeout is not supported by kernel(need TPacketV3)
+	// ticker time can't be too small, otherwise, if the rsr.conn.Close before recv or send routine quit, it might cause panic
+	ticker := time.NewTicker(rsr.recvTimeout + 3*time.Second)
 	defer ticker.Stop()
 	done := make(chan bool)
 	go func(d chan bool) {
@@ -803,6 +859,8 @@ func (rsr *RawSocketRelay) Stop() {
 		rsr.log("failed to get raw stats %v", err)
 	}
 	rsr.log("raw stats:%+v", rawstat)
+	//NOTE: without closing this, the recreating relay on same interface might cause issue
+	rsr.conn.Close()
 }
 
 // EtherConn send/recv Ethernet payload like IP packet with
@@ -822,6 +880,7 @@ type EtherConn struct {
 	writeDeadline     time.Time
 	writeDeadlineLock *sync.RWMutex
 	recvMulticast     bool
+	isDefault         bool
 }
 
 // EtherConnOption is a function use to provide customized option when creating EtherConn
@@ -843,6 +902,15 @@ func WithRecvMulticast(recv bool) EtherConnOption {
 	}
 }
 
+// WithDefault will register the EtherConn to be the default EtherConn for received traffic,
+// see PacketRelay.RegisterDefault for details.
+// if relay is created with mirroring to default, then the etherconn will get a copy of all received pkt by the relay
+func WithDefault() EtherConnOption {
+	return func(ec *EtherConn) {
+		ec.isDefault = true
+	}
+}
+
 // NewEtherConn creates a new EtherConn instance, mac is used as part of EtherConn's L2Endpoint;
 // relay is the PacketRelay that EtherConn instance register with;
 // options specifies EtherConnOption(s) to use;
@@ -856,7 +924,11 @@ func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnO
 	for _, option := range options {
 		option(r)
 	}
-	r.recvChan, r.sendChan, r.stopSendChan = relay.Register(r.l2EP.GetKey(), r.recvMulticast)
+	if !r.isDefault {
+		r.recvChan, r.sendChan, r.stopSendChan = relay.Register(r.l2EP.GetKey(), r.recvMulticast)
+	} else {
+		r.recvChan, r.sendChan, r.stopSendChan = relay.RegisterDefault()
+	}
 	r.readDeadlineLock = new(sync.RWMutex)
 	r.writeDeadlineLock = new(sync.RWMutex)
 	r.relay = relay
@@ -909,29 +981,27 @@ func ResolveNexhopMACWithBrodcast(ip net.IP) net.HardwareAddr {
 
 //getAddr return src/dst IP address from an IP packet ipbytes
 
-// buildEthernetHeader return a Ethernet header byte slice
-func (ec *EtherConn) buildEthernetHeader(dstmac net.HardwareAddr, payloadtype uint16) []byte {
-
-	eth := layers.Ethernet{
-		SrcMAC: ec.ownMAC,
-	}
+func (ec *EtherConn) buildEthernetHeaderWithSrcVLAN(srcmac, dstmac net.HardwareAddr, vlans VLANs, payloadtype uint16) []byte {
+	eth := layers.Ethernet{}
+	eth.SrcMAC = make(net.HardwareAddr, len(srcmac))
+	copy(eth.SrcMAC, srcmac)
 	eth.DstMAC = make(net.HardwareAddr, len(dstmac))
 	copy(eth.DstMAC, dstmac)
-	switch len(ec.vlans) {
+	switch len(vlans) {
 	case 0:
 		eth.EthernetType = layers.EthernetType(payloadtype)
 	default:
-		eth.EthernetType = layers.EthernetType(ec.vlans[0].EtherType)
+		eth.EthernetType = layers.EthernetType(vlans[0].EtherType)
 	}
 	layerList := []gopacket.SerializableLayer{&eth}
-	for i, v := range ec.vlans {
+	for i, v := range vlans {
 		vlan := layers.Dot1Q{
 			VLANIdentifier: v.ID,
 		}
-		if i == len(ec.vlans)-1 {
+		if i == len(vlans)-1 {
 			vlan.Type = layers.EthernetType(payloadtype)
 		} else {
-			vlan.Type = layers.EthernetType(ec.vlans[i+1].EtherType)
+			vlan.Type = layers.EthernetType(vlans[i+1].EtherType)
 		}
 		layerList = append(layerList, &vlan)
 	}
@@ -944,9 +1014,50 @@ func (ec *EtherConn) buildEthernetHeader(dstmac net.HardwareAddr, payloadtype ui
 	return buf.Bytes()[:len(buf.Bytes())-paddingLen]
 }
 
+// buildEthernetHeader return a Ethernet header byte slice
+func (ec *EtherConn) buildEthernetHeader(dstmac net.HardwareAddr, payloadtype uint16) []byte {
+	return ec.buildEthernetHeaderWithSrcVLAN(ec.ownMAC, dstmac, ec.vlans, payloadtype)
+
+	// eth := layers.Ethernet{
+	// 	SrcMAC: ec.ownMAC,
+	// }
+	// eth.DstMAC = make(net.HardwareAddr, len(dstmac))
+	// copy(eth.DstMAC, dstmac)
+	// switch len(ec.vlans) {
+	// case 0:
+	// 	eth.EthernetType = layers.EthernetType(payloadtype)
+	// default:
+	// 	eth.EthernetType = layers.EthernetType(ec.vlans[0].EtherType)
+	// }
+	// layerList := []gopacket.SerializableLayer{&eth}
+	// for i, v := range ec.vlans {
+	// 	vlan := layers.Dot1Q{
+	// 		VLANIdentifier: v.ID,
+	// 	}
+	// 	if i == len(ec.vlans)-1 {
+	// 		vlan.Type = layers.EthernetType(payloadtype)
+	// 	} else {
+	// 		vlan.Type = layers.EthernetType(ec.vlans[i+1].EtherType)
+	// 	}
+	// 	layerList = append(layerList, &vlan)
+	// }
+	// buf := gopacket.NewSerializeBuffer()
+	// //NOTE:follow padding is needed to avoid Ethernet layer serialization to pad to 60B
+	// const paddingLen = 60
+	// layerList = append(layerList, gopacket.Payload(make([]byte, paddingLen)))
+	// opts := gopacket.SerializeOptions{}
+	// gopacket.SerializeLayers(buf, opts, layerList...)
+	// return buf.Bytes()[:len(buf.Bytes())-paddingLen]
+}
+
 // WriteIPPktTo sends an IPv4/IPv6 packet,
 // the pkt will be sent to dstmac, along with EtherConn.L2EP.VLANs.
 func (ec *EtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error) {
+	return ec.WriteIPPktToFrom(p, ec.ownMAC, dstmac, ec.vlans)
+}
+
+// WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
+func (ec *EtherConn) WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
 	var payloadtype layers.EthernetType
 	switch p[0] >> 4 {
 	case 4:
@@ -956,13 +1067,12 @@ func (ec *EtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error
 	default:
 		return 0, fmt.Errorf("failed to write to EtherConn, invalid IP version, %d", p[0]>>4)
 	}
-	return ec.WritePktTo(p, uint16(payloadtype), dstmac)
+	return ec.WritePktToFrom(p, uint16(payloadtype), srcmac, dstmac, vlans)
 }
 
-// WritePktTo sends an Ethernet payload, along with specified EtherType,
-// the pkt will be sent to dstmac, along with EtherConn.L2EP.VLANs.
-func (ec *EtherConn) WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr) (int, error) {
-	h := ec.buildEthernetHeader(dstmac, etype)
+// WritePktToFrom is same as WritePktTo except with srcmac
+func (ec *EtherConn) WritePktToFrom(p []byte, etype uint16, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+	h := ec.buildEthernetHeaderWithSrcVLAN(srcmac, dstmac, vlans, etype)
 	fullp := append(h, p...)
 	ec.writeDeadlineLock.RLock()
 	deadline := ec.writeDeadline
@@ -994,6 +1104,44 @@ func (ec *EtherConn) WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr)
 		return 0, ErrTimeOut
 	}
 	return len(p), nil
+}
+
+// WritePktTo sends an Ethernet payload, along with specified EtherType,
+// the pkt will be sent to dstmac, along with EtherConn.L2EP.VLANs.
+func (ec *EtherConn) WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr) (int, error) {
+	return ec.WritePktToFrom(p, etype, ec.ownMAC, dstmac, ec.vlans)
+	// h := ec.buildEthernetHeader(dstmac, etype)
+	// fullp := append(h, p...)
+	// ec.writeDeadlineLock.RLock()
+	// deadline := ec.writeDeadline
+	// ec.writeDeadlineLock.RUnlock()
+	// d := deadline.Sub(time.Now())
+	// timeout := false
+	// select {
+	// case <-ec.stopSendChan:
+	// 	return 0, ErrRelayStopped
+	// default:
+	// }
+	// if d > 0 {
+	// 	select {
+	// 	case <-ec.stopSendChan:
+	// 		return 0, ErrRelayStopped
+	// 	case <-time.After(d):
+	// 		timeout = true
+	// 	case ec.sendChan <- fullp:
+	// 	}
+	// } else {
+	// 	select {
+	// 	case ec.sendChan <- fullp:
+	// 	case <-ec.stopSendChan:
+	// 		return 0, ErrRelayStopped
+	// 	}
+
+	// }
+	// if timeout {
+	// 	return 0, ErrTimeOut
+	// }
+	// return len(p), nil
 }
 
 func getIPBytesFromPacket(p gopacket.Packet) ([]byte, int) {
@@ -1146,16 +1294,10 @@ func (ruc *RUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 
 }
 
-// WriteTo implements net.PacketConn interface, it sends UDP payload;
-// This function adds UDP and IP header, and uses RUDPConn's resolve function
-// to get nexthop's MAC address, and use underlying EtherConn to send IP packet,
-// with EtherConn's Ethernet encapsulation, to nexthop MAC address;
-// by default ResolveNexhopMACWithBrodcast is used for nexthop mac resolvement
-func (ruc *RUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	dst := addr.(*net.UDPAddr)
-	ruc.addrLock.RLock()
-	src := *(ruc.localAddress)
-	ruc.addrLock.RUnlock()
+// WriteToFrom is same as WriteTo except sending payload p to dst with source address as src
+func (ruc *RUDPConn) WriteToFrom(p []byte, srcaddr, dstaddr net.Addr) (int, error) {
+	dst := dstaddr.(*net.UDPAddr)
+	src := srcaddr.(*net.UDPAddr)
 	buf := gopacket.NewSerializeBuffer()
 	var iplayer gopacket.SerializableLayer
 	udplayer := &layers.UDP{
@@ -1192,6 +1334,18 @@ func (ruc *RUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// WriteTo implements net.PacketConn interface, it sends UDP payload;
+// This function adds UDP and IP header, and uses RUDPConn's resolve function
+// to get nexthop's MAC address, and use underlying EtherConn to send IP packet,
+// with EtherConn's Ethernet encapsulation, to nexthop MAC address;
+// by default ResolveNexhopMACWithBrodcast is used for nexthop mac resolvement
+func (ruc *RUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	ruc.addrLock.RLock()
+	src := *(ruc.localAddress)
+	ruc.addrLock.RUnlock()
+	return ruc.WriteToFrom(p, &src, addr)
 }
 
 // SetReadDeadline implements net.PacketConn interface
