@@ -51,16 +51,20 @@ func testCreateVETHLink(a, b string) (netlink.Link, netlink.Link, error) {
 }
 
 type testEtherConnEndpoint struct {
-	mac           net.HardwareAddr
-	vlans         []*VLAN
-	dstMACFlag    int
-	recvMulticast bool
-	filter        string
+	mac               net.HardwareAddr
+	vlans             []*VLAN
+	ETypes            []uint16
+	defaultConn       bool
+	defaultConnMirror bool
+	dstMACFlag        int
+	recvMulticast     bool
+	filter            string
 }
 
 type testEtherConnSingleCase struct {
 	A          testEtherConnEndpoint
 	B          testEtherConnEndpoint
+	C          testEtherConnEndpoint //used only in testing default mirroring
 	shouldFail bool
 }
 
@@ -317,6 +321,129 @@ func TestEtherConn(t *testing.T) {
 			},
 			shouldFail: true,
 		},
+
+		//default receive case, no mirroring, no matching vlan&mac
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				dstMACFlag: macTestWrong,
+			},
+			B: testEtherConnEndpoint{
+				defaultConn: true,
+				mac:         net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        101,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+		},
+		//default receive case, mirroring, no matching vlan&mac
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				dstMACFlag: macTestCorrect,
+			},
+			B: testEtherConnEndpoint{
+				defaultConn:       true,
+				ETypes:            []uint16{1},
+				defaultConnMirror: true,
+				mac:               net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        101,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+			C: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+		},
+		//negative case, default receive case, no mirroring, no matching vlan&mac
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				dstMACFlag: macTestCorrect,
+			},
+			B: testEtherConnEndpoint{
+				defaultConn:       true,
+				ETypes:            []uint16{1},
+				defaultConnMirror: false,
+				mac:               net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        101,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+			C: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+			shouldFail: true,
+		},
+		//negative case, ethertypes not allowed
+		testEtherConnSingleCase{
+			A: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				dstMACFlag: macTestCorrect,
+			},
+			B: testEtherConnEndpoint{
+				ETypes: []uint16{0x1},
+				mac:    net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*VLAN{
+					&VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				recvMulticast: false,
+			},
+			shouldFail: true,
+		},
 	}
 
 	testFunc := func(c testEtherConnSingleCase) error {
@@ -328,7 +455,14 @@ func TestEtherConn(t *testing.T) {
 		if c.A.filter != "" {
 			filterstr = c.A.filter
 		}
-		peerA, err := NewRawSocketRelay(context.Background(), testifA, WithDebug(true), WithBPFFilter(filterstr))
+		mods := []RelayOption{
+			WithDebug(true),
+			WithBPFFilter(filterstr),
+		}
+		if c.A.defaultConn {
+			mods = append(mods, WithDefaultReceival(c.A.defaultConnMirror))
+		}
+		peerA, err := NewRawSocketRelay(context.Background(), testifA, mods...)
 		if err != nil {
 			return err
 		}
@@ -337,18 +471,67 @@ func TestEtherConn(t *testing.T) {
 		if c.B.filter != "" {
 			filterstr = c.B.filter
 		}
-		peerB, err := NewRawSocketRelay(context.Background(), testifB, WithDebug(true), WithBPFFilter(filterstr))
+		mods = []RelayOption{
+			WithDebug(true),
+			WithBPFFilter(filterstr),
+		}
+		if c.B.defaultConn {
+			mods = append(mods, WithDefaultReceival(c.B.defaultConnMirror))
+		}
+		peerB, err := NewRawSocketRelay(context.Background(), testifB, mods...)
 		if err != nil {
 			return err
 		}
 		defer peerB.Stop()
-		econnA := NewEtherConn(c.A.mac, peerA, WithVLANs(c.A.vlans))
+		emods := []EtherConnOption{
+			WithVLANs(c.A.vlans),
+		}
+		if len(c.A.ETypes) == 0 {
+			emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+		} else {
+			emods = append(emods, WithEtherTypes(c.A.ETypes))
+		}
+		if c.A.defaultConn {
+			emods = append(emods, WithDefault())
+		}
+		econnA := NewEtherConn(c.A.mac, peerA, emods...)
+		defer econnA.Close()
+		emods = []EtherConnOption{
+			WithVLANs(c.B.vlans),
+			WithRecvMulticast(c.B.recvMulticast),
+		}
+		if len(c.B.ETypes) == 0 {
+			emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+		} else {
+			emods = append(emods, WithEtherTypes(c.B.ETypes))
+		}
+		if c.B.defaultConn {
+			emods = append(emods, WithDefault())
+		}
+		econnB := NewEtherConn(c.B.mac, peerB, emods...)
+		defer econnB.Close()
 
-		econnB := NewEtherConn(c.B.mac, peerB, WithVLANs(c.B.vlans), WithRecvMulticast(c.B.recvMulticast))
+		if len(c.C.mac) > 0 {
+			t.Logf("create endpoint C")
+			emods = []EtherConnOption{
+				WithVLANs(c.C.vlans),
+				WithRecvMulticast(c.C.recvMulticast),
+			}
+			if len(c.C.ETypes) == 0 {
+				emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+			} else {
+				emods = append(emods, WithEtherTypes(c.C.ETypes))
+			}
+			if c.C.defaultConn {
+				emods = append(emods, WithDefault())
+			}
+			econnC := NewEtherConn(c.C.mac, peerB, emods...)
+			defer econnC.Close()
+		}
 		maxSize := 1000
 		for i := 0; i < 10; i++ {
+			fmt.Printf("send pkt %d\n", i)
 			pktSize := maxSize - rand.Intn(maxSize-63)
-
 			p := testGenDummyIPbytes(pktSize, i%2 == 0)
 			var dst net.HardwareAddr
 			switch c.A.dstMACFlag {
@@ -359,7 +542,7 @@ func TestEtherConn(t *testing.T) {
 			default:
 				dst = net.HardwareAddr{0, 0, 0, 0, 0, 0}
 			}
-			fmt.Printf("send packet with length %d to %v\n", len(p), dst)
+			fmt.Printf("send packet with length %d to %v\n content %v\n", len(p), dst, p)
 			_, err := econnA.WriteIPPktTo(p, dst)
 			if err != nil {
 				return err
@@ -375,13 +558,18 @@ func TestEtherConn(t *testing.T) {
 				return err
 			}
 			if !bytes.Equal(p, rcvdbuf[:n]) {
-				return fmt.Errorf("recvied bytes is different from sent, sent %v, recv %v", p, rcvdbuf[:n])
+				return fmt.Errorf("recvied bytes is different from sent for pkt %d, sent %v, recv %v", i, p, rcvdbuf[:n])
+			} else {
+				fmt.Printf("recved a good  pkt\n")
 			}
 		}
 
 		return nil
 	}
 	for i, c := range testCaseList {
+		// if i != 10 {
+		// 	continue
+		// }
 		err := testFunc(c)
 		if err != nil {
 			if c.shouldFail {

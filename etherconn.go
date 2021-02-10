@@ -1,4 +1,4 @@
-// Copyright 2020 Hu Jun. All rights reserved.
+// Copyright 2021 Hu Jun. All rights reserved.
 // This project is licensed under the terms of the MIT license.
 
 /*Package etherconn is a golang pkg that allow user to send/receive Ethernet
@@ -25,9 +25,10 @@ Usage:
 
 1. Create a PacketRelay instance and bound to an interface.PacketRelay is the
 "forward engine" that does actual packet sending/receiving for all EtherConn
-instances registered with it; PacketRelay send/receive Ethernet packet
+instances registered with it; PacketRelay send/receive Ethernet packet;
+PacketRelay is an interface, currently RawSocketRelay is the only implementation.
 
-2. Create one EtherConn for each source MAC+VLAN(s) combination needed,
+2. Create one EtherConn for each source MAC+VLAN(s)+EtherType(s) combination needed,
 and register with the PacketRelay instance. EtherConn send/receive Ethernet
 payload like IP packet;
 
@@ -45,17 +46,17 @@ Egress direction:
 	UDP_payload -> RUDPConn(add UDP&IP header) -> EtherConn(add Ethernet header) -> PacketRelay
 
 Ingress direction:
-	Ethernet_pkt -> PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
-	Ethernet_pkt -> PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
+	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
+	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
 
 Note: PacketRelay parse pkt for Ethernet payload based on following rules:
-* PacketRelay has list of EtherTypes, by default are  0x0800 (IPv4) and 0x86dd (IPv6)
-* If Ethernet pkt doesn't have VLAN tag, EtherType in Ethernet header is used to see if the pkt contains the interested payload
-* else, EtherType in last VLAN tag is used
+* PacketRelay has default BPFilter set to only allow IPv4/ARP/IPv6 packet
+* If Ethernet pkt doesn't have VLAN tag, dstMAC + EtherType in Ethernet header is used to locate registered EtherConn
+* else, dstMAC + VLANs +  EtherType in last VLAN tag is used
 
 Limitations:
 	 * linux only
-	 * since etherconn bypassed linux IP routing stack, it is user's job to provide functions like:
+	 * since etherconn bypassed linux IP stack, it is user's job to provide functions like:
 	    * routing next-hop lookup
 	    * IP -> MAC address resolution
 	* no IP packet fragementation/reassembly support
@@ -79,7 +80,7 @@ Example:
 			EtherType: 0x8100,
 		},
 	}
-	// create EtherConn, with src mac "aa:bb:cc:11:22:33" and VLAN 100,
+	// create EtherConn, with src mac "aa:bb:cc:11:22:33" , VLAN 100 and DefaultEtherTypes,
 	// with DOT1Q EtherType 0x8100, the mac/vlan doesn't need to be provisioned in OS
 	econn := etherconn.NewEtherConn(mac, relay, etherconn.WithVLANs(vlanLlist))
 	// create RUDPConn to use 0.0.0.0 and UDP port 68 as source, with option to accept any UDP packet
@@ -235,6 +236,7 @@ func (vlans VLANs) Equal(vlans2 VLANs) bool {
 type L2Endpoint struct {
 	HwAddr net.HardwareAddr
 	VLANs  []uint16
+	Etype  uint16 //inner most EtherType (e.g payload type)
 }
 
 func newL2Endpoint() *L2Endpoint {
@@ -243,7 +245,8 @@ func newL2Endpoint() *L2Endpoint {
 	return r
 }
 
-// NewL2EndpointFromMACVLAN creates a new L2Endpoint from mac and vlans
+// NewL2EndpointFromMACVLAN creates a new L2Endpoint from mac and vlans;
+// its Etype  is set to any
 func NewL2EndpointFromMACVLAN(mac net.HardwareAddr, vlans VLANs) *L2Endpoint {
 	r := newL2Endpoint()
 	copy(r.HwAddr, mac)
@@ -254,12 +257,23 @@ func NewL2EndpointFromMACVLAN(mac net.HardwareAddr, vlans VLANs) *L2Endpoint {
 	return r
 }
 
+// NewL2EndpointFromMACVLANEtype creates a new L2Endpoint from mac, vlans and etype
+func NewL2EndpointFromMACVLANEtype(mac net.HardwareAddr, vlans VLANs, etype uint16) *L2Endpoint {
+	r := NewL2EndpointFromMACVLAN(mac, vlans)
+	r.Etype = etype
+	return r
+}
+
 // GetVLANIdsFromPacket returns VLAN IDs in the f, as a slice of uint16;
 // f should be a Ethernet packet
-func getVLANIdsFromPacket(f gopacket.Packet) (r []uint16) {
+func getVLANIdsFromPacket(f gopacket.Packet) (r []uint16, etype uint16) {
 	for _, l := range f.Layers() {
+		if l.LayerType() == layers.LayerTypeEthernet {
+			etype = uint16(l.(*layers.Ethernet).EthernetType)
+		}
 		if l.LayerType() == layers.LayerTypeDot1Q {
 			r = append(r, l.(*layers.Dot1Q).VLANIdentifier)
+			etype = uint16(l.(*layers.Dot1Q).Type)
 		}
 	}
 	return
@@ -270,7 +284,7 @@ func getVLANIdsFromPacket(f gopacket.Packet) (r []uint16) {
 // it also return the other MAC address;
 func getEtherAdrrInfoFromPacket(f gopacket.Packet, usesrc bool) (*L2Endpoint, net.HardwareAddr) {
 	r := newL2Endpoint()
-	r.VLANs = getVLANIdsFromPacket(f)
+	r.VLANs, r.Etype = getVLANIdsFromPacket(f)
 	ethLayer := f.Layer(layers.LayerTypeEthernet).(*layers.Ethernet)
 	if usesrc {
 		copy(r.HwAddr, ethLayer.SrcMAC)
@@ -304,30 +318,29 @@ const (
 	// MaxNumVLAN specifies max number vlan this pkg supports
 	MaxNumVLAN = 2
 	// L2EndpointKeySize is the size of L2EndpointKey in bytes
-	L2EndpointKeySize = 6 + 2*MaxNumVLAN //must be 6+2*n
+	L2EndpointKeySize = 6 + 2*MaxNumVLAN + 2 //must be 6+2*n
 )
 
 // L2EndpointKey is key identify a L2EndPoint,first 6 bytes are MAC address,
-// rest are VLAN Ids in order (from outside to inner),
+// VLAN Ids in order (from outside to inner),
 // each VLAN id are two bytes in network endian, if VLAN id is NOVLANTAG,
-// then it means no such tag
+// then it means no such tag; last two bytes are inner most EtherType.
 type L2EndpointKey [L2EndpointKeySize]byte
 
 func (l2epkey L2EndpointKey) String() string {
 	r := fmt.Sprintf("%v", net.HardwareAddr(l2epkey[:6]))
-	for i := 6; i+2 <= L2EndpointKeySize; i += 2 {
+	for i := 6; i+2 <= L2EndpointKeySize-2; i += 2 {
 		vid := binary.BigEndian.Uint16(l2epkey[i : i+2])
 		if vid != NOVLANTAG {
 			r += fmt.Sprintf("|%d", vid)
 		}
 	}
+	r += fmt.Sprintf("#0x%x", l2epkey[len(l2epkey)-2:])
 	return r
 }
 
 // GetKey returns the key of the L2Endpoint
 func (l2e *L2Endpoint) GetKey() (key L2EndpointKey) {
-	// fmt.Println("keylen", len(key))
-	// fmt.Println("hwaddr len", len(l2e.HwAddr))
 	copy(key[:6], l2e.HwAddr[:6])
 	j := 0
 	for i := 6; i+2 <= L2EndpointKeySize; i += 2 {
@@ -338,6 +351,7 @@ func (l2e *L2Endpoint) GetKey() (key L2EndpointKey) {
 		}
 		j++
 	}
+	binary.BigEndian.PutUint16(key[len(key)-2:], l2e.Etype)
 	return
 }
 
@@ -352,9 +366,11 @@ func (l2e *L2Endpoint) String() (s string) {
 	return fmt.Sprintf("%v&%v", l2e.Network(), l2e.GetKey().String())
 }
 
+// DefaultVLANEtype is the default Ethernet type for vlan tags,
+// used by function GetVLANs()
 const DefaultVLANEtype = 0x8100
 
-// GetVLANs return an instance of VLANs with VLAN ethernet type set as DefaultVLANEtype
+// GetVLANsWithDefaultEtype return an instance of VLANs with VLAN ethernet type set as DefaultVLANEtype
 func (l2e *L2Endpoint) GetVLANsWithDefaultEtype() (r VLANs) {
 	for _, vid := range l2e.VLANs {
 		r = append(r, &VLAN{
@@ -436,6 +452,14 @@ func (cm *chanMap) Set(k L2EndpointKey, v chan *RelayReceival) {
 	cm.lock.Unlock()
 }
 
+func (cm *chanMap) SetList(ks []L2EndpointKey, v chan *RelayReceival) {
+	cm.lock.Lock()
+	for _, k := range ks {
+		cm.cmlist[k] = v
+	}
+	cm.lock.Unlock()
+}
+
 func (cm *chanMap) Get(k L2EndpointKey) chan *RelayReceival {
 	cm.lock.RLock()
 	defer cm.lock.RUnlock()
@@ -445,6 +469,13 @@ func (cm *chanMap) Get(k L2EndpointKey) chan *RelayReceival {
 func (cm *chanMap) Del(k L2EndpointKey) {
 	cm.lock.Lock()
 	delete(cm.cmlist, k)
+	cm.lock.Unlock()
+}
+func (cm *chanMap) DelList(ks []L2EndpointKey) {
+	cm.lock.Lock()
+	for _, k := range ks {
+		delete(cm.cmlist, k)
+	}
 	cm.lock.Unlock()
 }
 
@@ -461,19 +492,20 @@ func (cm *chanMap) GetList() []chan *RelayReceival {
 // PacketRelay is a interface for the packet forwarding engine,
 // RawSocketRelay implements this interface;
 type PacketRelay interface {
-	// Register register a L2EndpointKey of a EtherConn, PacketRely send/recv pkt on its behalf,
+	// Register register a list of L2EndpointKey of a EtherConn, PacketRely send/recv pkt on its behalf,
 	// it returns two channels:
 	// recv is the channel used to recive;
 	// send is the channel used to send;
 	// stop is a channel that will be closed when PacketRelay stops sending;
-	// if recvMulticast is true, then multicast ethernet traffic will be recvied as well
-	Register(k L2EndpointKey, recvMulticast bool) (recv chan *RelayReceival, send chan []byte, stop chan struct{})
+	// if recvMulticast is true, then multicast ethernet traffic will be recvied as well;
+	// if one of key is already registered, then existing key will be overriden;
+	Register(ks []L2EndpointKey, recvMulticast bool) (recv chan *RelayReceival, send chan []byte, stop chan struct{})
 	// RegisterDefault return default receive channel,
 	// meaning a received pkt doesn't match any other specific EtherConn registered with L2Endpointkey will be send to this channel;
 	// multicast traffic will be also sent to this channel;
 	RegisterDefault() (recv chan *RelayReceival, send chan []byte, stop chan struct{})
 	// Deregister removes L2EndpointKey from registration
-	Deregister(k L2EndpointKey)
+	Deregister(ks []L2EndpointKey)
 	// Stop stops the forwarding of PacketRelay
 	Stop()
 	//IfName return binding interface name
@@ -495,11 +527,11 @@ type RawSocketRelay struct {
 	maxEtherFrameSize    uint
 	stats                *RelayPacketStats
 	logger               *log.Logger
-	etherTypeList        map[uint16]struct{}
-	ifName               string
-	bpfFilter            *string
-	defaultRecvChan      chan *RelayReceival
-	mirrorToDefault      bool
+	// etherTypeList        map[uint16]struct{} //TODO: remove this , this is duplicate with bpfFilter
+	ifName          string
+	bpfFilter       *string
+	defaultRecvChan chan *RelayReceival
+	mirrorToDefault bool
 }
 
 // RelayOption is a function use to provide customized option when creating RawSocketRelay
@@ -556,17 +588,6 @@ func WithRecvTimeout(t time.Duration) RelayOption {
 	}
 }
 
-// WithEtherType specifies a list of EtherTypes need to be parsed;
-// by default, only  0x0800 (IPv4) and 0x86dd (IPv6) are parsed;
-func WithEtherType(etypes []uint16) RelayOption {
-	return func(relay *RawSocketRelay) {
-		relay.etherTypeList = make(map[uint16]struct{})
-		for _, t := range etypes {
-			relay.etherTypeList[t] = exists
-		}
-	}
-}
-
 // WithDefaultReceival creates a default receiving channel,
 // all received pkt doesn't match any explicit EtherConn, will be sent to this channel;
 // using RegisterDefault to get the default receiving channel.
@@ -579,6 +600,12 @@ func WithDefaultReceival(mirroring bool) RelayOption {
 }
 
 var exists = struct{}{}
+
+// DefaultEtherTypes is the default list of Ethernet types for RawPacketRelay and EtherConn
+var DefaultEtherTypes = []uint16{
+	uint16(layers.EthernetTypeARP),
+	uint16(layers.EthernetTypeIPv4),
+	uint16(layers.EthernetTypeIPv6)}
 
 // NewRawSocketRelay creates a new RawSocketRelay instance,
 // bound to the interface ifname,
@@ -608,7 +635,7 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 		return nil, fmt.Errorf("failed to create rawsocketrelay,%w", err)
 	}
 	r.stopToSendChan = make(chan struct{})
-	r.etherTypeList = map[uint16]struct{}{0x0800: exists, 0x86dd: exists}
+	// r.etherTypeList = map[uint16]struct{}{0x0800: exists, 0x86dd: exists}
 	r.perClntRecvChanDepth = DefaultPerClntRecvChanDepth
 	r.sendChanDepth = DefaultSendChanDepth
 	r.maxEtherFrameSize = DefaultMaxEtherFrameSize
@@ -627,11 +654,11 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 		op(r)
 	}
 	if r.bpfFilter != nil {
-		if *r.bpfFilter != "" {
-			err = r.setBPFFilter(*r.bpfFilter)
-		}
+		// if *r.bpfFilter != "" {
+		err = r.setBPFFilter(*r.bpfFilter)
+		// }
 	} else {
-		err = r.setBPFFilter(buildPCAPFilterStrForEtherType(r.etherTypeList))
+		err = r.setBPFFilter(buildPCAPFilterStrForEtherType(DefaultEtherTypes))
 	}
 	if err != nil {
 		return nil, err
@@ -652,28 +679,29 @@ func (rsr *RawSocketRelay) log(format string, a ...interface{}) {
 }
 
 // Register implements PacketRelay interface;
-// if mac is already registered, then returns its corresponding channel.
-func (rsr *RawSocketRelay) Register(k L2EndpointKey, recvMulticast bool) (chan *RelayReceival, chan []byte, chan struct{}) {
-	ch := rsr.recvList.Get(k)
-	if ch != nil {
-		return ch, rsr.toSendChan, rsr.stopToSendChan
-	}
-	ch = make(chan *RelayReceival, rsr.perClntRecvChanDepth)
-	rsr.recvList.Set(k, ch)
+func (rsr *RawSocketRelay) Register(ks []L2EndpointKey, recvMulticast bool) (chan *RelayReceival, chan []byte, chan struct{}) {
+	// ch := rsr.recvList.Get(k)
+	// if ch != nil {
+	// 	return ch, rsr.toSendChan, rsr.stopToSendChan
+	// }
+	ch := make(chan *RelayReceival, rsr.perClntRecvChanDepth)
+	rsr.recvList.SetList(ks, ch)
 	if recvMulticast {
-		rsr.multicastList.Set(k, ch)
+		//NOTE: only set one key in multicast, otherwise the EtherConn will receive multiple copies
+		rsr.multicastList.Set(ks[0], ch)
 	}
 	return ch, rsr.toSendChan, rsr.stopToSendChan
 }
 
+// RegisterDefault implements PacketRelay interface
 func (rsr *RawSocketRelay) RegisterDefault() (chan *RelayReceival, chan []byte, chan struct{}) {
 	return rsr.defaultRecvChan, rsr.toSendChan, rsr.stopToSendChan
 }
 
 // Deregister implements PacketRelay interface;
-func (rsr *RawSocketRelay) Deregister(k L2EndpointKey) {
-	rsr.recvList.Del(k)
-	rsr.multicastList.Del(k)
+func (rsr *RawSocketRelay) Deregister(ks []L2EndpointKey) {
+	rsr.recvList.DelList(ks)
+	rsr.multicastList.DelList(ks)
 }
 
 func (rsr *RawSocketRelay) send(ctx context.Context) {
@@ -702,6 +730,7 @@ func checkPacketBytes(p []byte) error {
 	return nil
 }
 
+// IfName returns the name of the binding interface
 func (rsr *RawSocketRelay) IfName() string {
 	return rsr.ifName
 }
@@ -712,13 +741,13 @@ L1:
 	for _, l := range p.Layers() {
 		switch l.LayerType() {
 		case layers.LayerTypeDot1Q:
-			if _, ok := rsr.etherTypeList[uint16(l.(*layers.Dot1Q).Type)]; ok {
-				receival.EtherPayloadBytes = l.LayerPayload()
-			}
+			// if _, ok := rsr.etherTypeList[uint16(l.(*layers.Dot1Q).Type)]; ok {
+			receival.EtherPayloadBytes = l.LayerPayload()
+			// }
 		case layers.LayerTypeEthernet:
-			if _, ok := rsr.etherTypeList[uint16(l.(*layers.Ethernet).EthernetType)]; ok {
-				receival.EtherPayloadBytes = l.LayerPayload()
-			}
+			// if _, ok := rsr.etherTypeList[uint16(l.(*layers.Ethernet).EthernetType)]; ok {
+			receival.EtherPayloadBytes = l.LayerPayload()
+			// }
 		case layers.LayerTypeIPv4:
 			receival.RemoteIP = make(net.IP, len(l.(*layers.IPv4).SrcIP))
 			copy(receival.RemoteIP, l.(*layers.IPv4).SrcIP)
@@ -748,6 +777,7 @@ L1:
 			atomic.AddUint64(counter, 1)
 			return
 		default:
+			rsr.log("channle full!!!!!!!!!!")
 			<-ch //channel is full, remove the oldest pkt in channel
 			if !fullcounted {
 				atomic.AddUint64(fullcounter, 1)
@@ -791,6 +821,7 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 		gpacket := gopacket.NewPacket(b[:ci.CaptureLength], layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
 		l2ep, rmac := getEtherAdrrInfoFromPacketWithAUXData(gpacket, false, ci.AncillaryData)
 		receival := newRelayReceival()
+		rsr.log("got pkt with l2epkey %v", l2ep.GetKey().String())
 		if rcvchan := rsr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
 			receival.EtherBytes = b[:ci.CaptureLength]
 			//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
@@ -838,6 +869,7 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 
 // Stop implements PacketRelay interface
 func (rsr *RawSocketRelay) Stop() {
+	rsr.log("relay stopping")
 	rsr.cancelFunc()
 	// this ticker is to make sure relay stop in case poll timeout is not supported by kernel(need TPacketV3)
 	// ticker time can't be too small, otherwise, if the rsr.conn.Close before recv or send routine quit, it might cause panic
@@ -868,10 +900,11 @@ func (rsr *RawSocketRelay) Stop() {
 // provisioning them in OS.
 // it needs to be registed with a PacketRelay instance to work.
 type EtherConn struct {
-	l2EP              *L2Endpoint
+	recvL2EPs         []*L2Endpoint
+	recvEtypes        []uint16
 	relay             PacketRelay
-	ownMAC            net.HardwareAddr
-	vlans             VLANs
+	ownMAC            net.HardwareAddr //for egress
+	vlans             VLANs            //for egress
 	sendChan          chan []byte
 	recvChan          chan *RelayReceival
 	stopSendChan      chan struct{}
@@ -890,7 +923,6 @@ type EtherConnOption func(ec *EtherConn)
 // by default, there is no VLAN.
 func WithVLANs(vlans VLANs) EtherConnOption {
 	return func(ec *EtherConn) {
-		ec.l2EP.VLANs = vlans.IDs()
 		ec.vlans.Copy(vlans)
 	}
 }
@@ -911,21 +943,42 @@ func WithDefault() EtherConnOption {
 	}
 }
 
+// WithEtherTypes specifies a list of Ethernet types that this EtherConn is interested in,
+// the specified Ethernet types is the types of inner payload,
+// the default list is DefaultEtherTypes
+func WithEtherTypes(ets []uint16) EtherConnOption {
+	return func(ec *EtherConn) {
+		ec.recvEtypes = make([]uint16, len(ets))
+		copy(ec.recvEtypes, ets)
+	}
+}
+
 // NewEtherConn creates a new EtherConn instance, mac is used as part of EtherConn's L2Endpoint;
 // relay is the PacketRelay that EtherConn instance register with;
 // options specifies EtherConnOption(s) to use;
 func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnOption) *EtherConn {
 	r := new(EtherConn)
-	r.l2EP = new(L2Endpoint)
-	r.l2EP.HwAddr = make(net.HardwareAddr, len(mac))
+	r.recvEtypes = DefaultEtherTypes
 	r.ownMAC = make(net.HardwareAddr, len(mac))
-	copy(r.l2EP.HwAddr, mac)
 	copy(r.ownMAC, mac)
 	for _, option := range options {
 		option(r)
 	}
+	//generate recvL2EPs
+	for _, et := range r.recvEtypes {
+		r.recvL2EPs = append(r.recvL2EPs, &L2Endpoint{
+			HwAddr: r.ownMAC,
+			VLANs:  r.vlans.IDs(),
+			Etype:  et,
+		})
+	}
+	//generate l2ep keys
+	l2keys := []L2EndpointKey{}
+	for _, ep := range r.recvL2EPs {
+		l2keys = append(l2keys, ep.GetKey())
+	}
 	if !r.isDefault {
-		r.recvChan, r.sendChan, r.stopSendChan = relay.Register(r.l2EP.GetKey(), r.recvMulticast)
+		r.recvChan, r.sendChan, r.stopSendChan = relay.Register(l2keys, r.recvMulticast)
 	} else {
 		r.recvChan, r.sendChan, r.stopSendChan = relay.RegisterDefault()
 	}
@@ -937,7 +990,7 @@ func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnO
 
 // LocalAddr return EtherConn's L2Endpoint
 func (ec *EtherConn) LocalAddr() *L2Endpoint {
-	return ec.l2EP
+	return ec.recvL2EPs[0]
 }
 
 // // Deadlines returns ReadDealine and WriteDeadline
@@ -1210,7 +1263,11 @@ func (ec *EtherConn) ReadPkt() ([]byte, net.HardwareAddr, error) {
 
 // Close implements net.PacketConn interface, deregister itself from PacketRelay
 func (ec *EtherConn) Close() error {
-	ec.relay.Deregister(ec.l2EP.GetKey())
+	l2keys := []L2EndpointKey{}
+	for _, ep := range ec.recvL2EPs {
+		l2keys = append(l2keys, ep.GetKey())
+	}
+	ec.relay.Deregister(l2keys)
 	return nil
 }
 
@@ -1437,10 +1494,10 @@ func (rps RelayPacketStats) String() string {
 
 // buildPCAPFilterStrForEtherType return a PCAP filter string to filter
 // all EtherType in etypes, include no tag, one tag and two tag
-func buildPCAPFilterStrForEtherType(etypes map[uint16]struct{}) string {
+func buildPCAPFilterStrForEtherType(etypes []uint16) string {
 	s := ""
 	i := 0
-	for t := range etypes {
+	for _, t := range etypes {
 		s += fmt.Sprintf("0x%x", t)
 		if i < len(etypes)-1 {
 			s += " or "

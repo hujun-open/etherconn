@@ -17,7 +17,7 @@ linux kernel limitation like # of socket/fd limitations, UDP buffer size...etc;
 Lastly etherconn.RUDPConn implements the net.PacketConn interface,
 so it could be easily integrated into existing code;
 
-## Usage:
+Usage:
 
 	interface <---> PacketRelay <----> EtherConn <---> RUDPConn
 	                            <----> EtherConn <---> RUDPConn
@@ -26,9 +26,10 @@ so it could be easily integrated into existing code;
 
 1. Create a PacketRelay instance and bound to an interface.PacketRelay is the
 "forward engine" that does actual packet sending/receiving for all EtherConn
-instances registered with it; PacketRelay send/receive Ethernet packet
+instances registered with it; PacketRelay send/receive Ethernet packet;
+PacketRelay is an interface, currently RawSocketRelay is the only implementation.
 
-2. Create one EtherConn for each source MAC+VLAN(s) combination needed,
+2. Create one EtherConn for each source MAC+VLAN(s)+EtherType(s) combination needed,
 and register with the PacketRelay instance. EtherConn send/receive Ethernet
 payload like IP packet;
 
@@ -42,26 +43,23 @@ different from RUDPConn's endpoint, and RUDPConn could either only accept correc
 pkt or accept any UDP packet;
 
 
-## Egress direction:
-
+Egress direction:
 	UDP_payload -> RUDPConn(add UDP&IP header) -> EtherConn(add Ethernet header) -> PacketRelay
 
-## Ingress direction:
-
-	Ethernet_pkt -> PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
-	Ethernet_pkt -> PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
+Ingress direction:
+	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
+	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
 
 Note: PacketRelay parse pkt for Ethernet payload based on following rules:
+* PacketRelay has default BPFilter set to only allow IPv4/ARP/IPv6 packet
+* If Ethernet pkt doesn't have VLAN tag, dstMAC + EtherType in Ethernet header is used to locate registered EtherConn
+* else, dstMAC + VLANs +  EtherType in last VLAN tag is used
 
-* PacketRelay has list of EtherTypes, by default are  0x0800 (IPv4) and 0x86dd (IPv6)
-* If Ethernet pkt doesn't have VLAN tag, EtherType in Ethernet header is used to see if the pkt contains the interested payload
-* else, EtherType in last VLAN tag is used 
+Limitations:
 
-## Limitations:
-
-* linux only
-* since etherconn bypassed linux IP routing stack, it is user's job to provide functions like:
-    * routing next-hop lookup
-    * IP -> MAC address resolution
-* no IP packet fragementation/reassembly support
-* using of etherconn requires to put interface in promiscuous mode, which requires root privileges
+	* linux only
+	* since etherconn bypassed linux IP stack, it is user's job to provide functions like:
+	    * routing next-hop lookup
+	    * IP -> MAC address resolution
+	* no IP packet fragementation/reassembly support
+	* using of etherconn requires to put interface in promiscuous mode, which requires root privileges
