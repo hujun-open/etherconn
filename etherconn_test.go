@@ -4,7 +4,7 @@
 Test setup reuqirements:
   - two interfaces name specified by argument testifA and testifB, these two interfaces are connected together
 */
-package etherconn
+package etherconn_test
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/hujun-open/etherconn"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -52,7 +54,7 @@ func testCreateVETHLink(a, b string) (netlink.Link, netlink.Link, error) {
 
 type testEtherConnEndpoint struct {
 	mac               net.HardwareAddr
-	vlans             []*VLAN
+	vlans             []*etherconn.VLAN
 	ETypes            []uint16
 	defaultConn       bool
 	defaultConnMirror bool
@@ -136,19 +138,19 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac:   net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{},
+				vlans: []*etherconn.VLAN{},
 			},
 			B: testEtherConnEndpoint{
 				mac:   net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{},
+				vlans: []*etherconn.VLAN{},
 			},
 		},
 		//good case, dot1q
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -156,8 +158,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -168,12 +170,12 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&VLAN{
+					&etherconn.VLAN{
 						ID:        222,
 						EtherType: 0x8100,
 					},
@@ -181,12 +183,12 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&VLAN{
+					&etherconn.VLAN{
 						ID:        222,
 						EtherType: 0x8100,
 					},
@@ -197,12 +199,12 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&VLAN{
+					&etherconn.VLAN{
 						ID:        222,
 						EtherType: 0x8100,
 					},
@@ -210,12 +212,12 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&VLAN{
+					&etherconn.VLAN{
 						ID:        222,
 						EtherType: 0x8100,
 					},
@@ -229,8 +231,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -238,8 +240,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -252,8 +254,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -262,8 +264,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -276,8 +278,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -286,8 +288,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -301,8 +303,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -311,8 +313,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			B: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -326,8 +328,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -337,8 +339,8 @@ func TestEtherConn(t *testing.T) {
 			B: testEtherConnEndpoint{
 				defaultConn: true,
 				mac:         net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -350,8 +352,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -363,8 +365,8 @@ func TestEtherConn(t *testing.T) {
 				ETypes:            []uint16{1},
 				defaultConnMirror: true,
 				mac:               net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -373,8 +375,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			C: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -386,8 +388,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -399,8 +401,8 @@ func TestEtherConn(t *testing.T) {
 				ETypes:            []uint16{1},
 				defaultConnMirror: false,
 				mac:               net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        101,
 						EtherType: 0x8100,
 					},
@@ -409,8 +411,8 @@ func TestEtherConn(t *testing.T) {
 			},
 			C: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -423,8 +425,8 @@ func TestEtherConn(t *testing.T) {
 		testEtherConnSingleCase{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -434,8 +436,8 @@ func TestEtherConn(t *testing.T) {
 			B: testEtherConnEndpoint{
 				ETypes: []uint16{0x1},
 				mac:    net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -455,14 +457,14 @@ func TestEtherConn(t *testing.T) {
 		if c.A.filter != "" {
 			filterstr = c.A.filter
 		}
-		mods := []RelayOption{
-			WithDebug(true),
-			WithBPFFilter(filterstr),
+		mods := []etherconn.RelayOption{
+			etherconn.WithDebug(true),
+			etherconn.WithBPFFilter(filterstr),
 		}
 		if c.A.defaultConn {
-			mods = append(mods, WithDefaultReceival(c.A.defaultConnMirror))
+			mods = append(mods, etherconn.WithDefaultReceival(c.A.defaultConnMirror))
 		}
-		peerA, err := NewRawSocketRelay(context.Background(), testifA, mods...)
+		peerA, err := etherconn.NewRawSocketRelay(context.Background(), testifA, mods...)
 		if err != nil {
 			return err
 		}
@@ -471,61 +473,61 @@ func TestEtherConn(t *testing.T) {
 		if c.B.filter != "" {
 			filterstr = c.B.filter
 		}
-		mods = []RelayOption{
-			WithDebug(true),
-			WithBPFFilter(filterstr),
+		mods = []etherconn.RelayOption{
+			etherconn.WithDebug(true),
+			etherconn.WithBPFFilter(filterstr),
 		}
 		if c.B.defaultConn {
-			mods = append(mods, WithDefaultReceival(c.B.defaultConnMirror))
+			mods = append(mods, etherconn.WithDefaultReceival(c.B.defaultConnMirror))
 		}
-		peerB, err := NewRawSocketRelay(context.Background(), testifB, mods...)
+		peerB, err := etherconn.NewRawSocketRelay(context.Background(), testifB, mods...)
 		if err != nil {
 			return err
 		}
 		defer peerB.Stop()
-		emods := []EtherConnOption{
-			WithVLANs(c.A.vlans),
+		emods := []etherconn.EtherConnOption{
+			etherconn.WithVLANs(c.A.vlans),
 		}
 		if len(c.A.ETypes) == 0 {
-			emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+			emods = append(emods, etherconn.WithEtherTypes(etherconn.DefaultEtherTypes))
 		} else {
-			emods = append(emods, WithEtherTypes(c.A.ETypes))
+			emods = append(emods, etherconn.WithEtherTypes(c.A.ETypes))
 		}
 		if c.A.defaultConn {
-			emods = append(emods, WithDefault())
+			emods = append(emods, etherconn.WithDefault())
 		}
-		econnA := NewEtherConn(c.A.mac, peerA, emods...)
+		econnA := etherconn.NewEtherConn(c.A.mac, peerA, emods...)
 		defer econnA.Close()
-		emods = []EtherConnOption{
-			WithVLANs(c.B.vlans),
-			WithRecvMulticast(c.B.recvMulticast),
+		emods = []etherconn.EtherConnOption{
+			etherconn.WithVLANs(c.B.vlans),
+			etherconn.WithRecvMulticast(c.B.recvMulticast),
 		}
 		if len(c.B.ETypes) == 0 {
-			emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+			emods = append(emods, etherconn.WithEtherTypes(etherconn.DefaultEtherTypes))
 		} else {
-			emods = append(emods, WithEtherTypes(c.B.ETypes))
+			emods = append(emods, etherconn.WithEtherTypes(c.B.ETypes))
 		}
 		if c.B.defaultConn {
-			emods = append(emods, WithDefault())
+			emods = append(emods, etherconn.WithDefault())
 		}
-		econnB := NewEtherConn(c.B.mac, peerB, emods...)
+		econnB := etherconn.NewEtherConn(c.B.mac, peerB, emods...)
 		defer econnB.Close()
 
 		if len(c.C.mac) > 0 {
 			t.Logf("create endpoint C")
-			emods = []EtherConnOption{
-				WithVLANs(c.C.vlans),
-				WithRecvMulticast(c.C.recvMulticast),
+			emods = []etherconn.EtherConnOption{
+				etherconn.WithVLANs(c.C.vlans),
+				etherconn.WithRecvMulticast(c.C.recvMulticast),
 			}
 			if len(c.C.ETypes) == 0 {
-				emods = append(emods, WithEtherTypes(DefaultEtherTypes))
+				emods = append(emods, etherconn.WithEtherTypes(etherconn.DefaultEtherTypes))
 			} else {
-				emods = append(emods, WithEtherTypes(c.C.ETypes))
+				emods = append(emods, etherconn.WithEtherTypes(c.C.ETypes))
 			}
 			if c.C.defaultConn {
-				emods = append(emods, WithDefault())
+				emods = append(emods, etherconn.WithDefault())
 			}
-			econnC := NewEtherConn(c.C.mac, peerB, emods...)
+			econnC := etherconn.NewEtherConn(c.C.mac, peerB, emods...)
 			defer econnC.Close()
 		}
 		maxSize := 1000
@@ -538,7 +540,7 @@ func TestEtherConn(t *testing.T) {
 			case macTestCorrect:
 				dst = c.B.mac
 			case macTestBD:
-				dst = BroadCastMAC
+				dst = etherconn.BroadCastMAC
 			default:
 				dst = net.HardwareAddr{0, 0, 0, 0, 0, 0}
 			}
@@ -590,8 +592,8 @@ func TestRUDPConn(t *testing.T) {
 		testRUDPConnSingleCase{
 			AEther: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -599,8 +601,8 @@ func TestRUDPConn(t *testing.T) {
 			},
 			BEther: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -615,8 +617,8 @@ func TestRUDPConn(t *testing.T) {
 		testRUDPConnSingleCase{
 			AEther: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -624,8 +626,8 @@ func TestRUDPConn(t *testing.T) {
 			},
 			BEther: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x2},
-				vlans: []*VLAN{
-					&VLAN{
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -643,12 +645,14 @@ func TestRUDPConn(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		peerA, err := NewRawSocketRelay(context.Background(), testifA, WithDebug(true))
+		peerA, err := etherconn.NewRawSocketRelay(context.Background(), testifA,
+			etherconn.WithDebug(true))
 		if err != nil {
 			return err
 		}
 		defer peerA.Stop()
-		peerB, err := NewRawSocketRelay(context.Background(), testifB, WithDebug(true))
+		peerB, err := etherconn.NewRawSocketRelay(context.Background(), testifB,
+			etherconn.WithDebug(true))
 		if err != nil {
 			return err
 		}
@@ -659,18 +663,20 @@ func TestRUDPConn(t *testing.T) {
 			case macTestCorrect:
 				return c.BEther.mac
 			case macTestBD:
-				return BroadCastMAC
+				return etherconn.BroadCastMAC
 			default:
 				return net.HardwareAddr{0, 0, 0, 0, 0, 0}
 			}
 		}
-		econnA := NewEtherConn(c.AEther.mac, peerA, WithVLANs(c.AEther.vlans))
-		econnB := NewEtherConn(c.BEther.mac, peerB, WithVLANs(c.BEther.vlans), WithRecvMulticast(c.BEther.recvMulticast))
-		rudpA, err := NewRUDPConn(myaddr.GenConnectionAddrStr("", c.AIP, c.APort), econnA, WithResolveNextHopMacFunc(resolvMacFunc))
+		econnA := etherconn.NewEtherConn(c.AEther.mac, peerA, etherconn.WithVLANs(c.AEther.vlans))
+		econnB := etherconn.NewEtherConn(c.BEther.mac, peerB, etherconn.WithVLANs(c.BEther.vlans),
+			etherconn.WithRecvMulticast(c.BEther.recvMulticast))
+		rudpA, err := etherconn.NewRUDPConn(myaddr.GenConnectionAddrStr("", c.AIP, c.APort), econnA,
+			etherconn.WithResolveNextHopMacFunc(resolvMacFunc))
 		if err != nil {
 			return err
 		}
-		rudpB, err := NewRUDPConn(myaddr.GenConnectionAddrStr("", c.BIP, c.BPort), econnB)
+		rudpB, err := etherconn.NewRUDPConn(myaddr.GenConnectionAddrStr("", c.BIP, c.BPort), econnB)
 		if err != nil {
 			return err
 		}
@@ -717,34 +723,34 @@ func TestRUDPConn(t *testing.T) {
 //v is the orignal value, vs is the orignal string
 //newIDs is the value for SetIDs, newv is the new VLANs after setIDs
 type testVLANsCase struct {
-	v          VLANs
+	v          etherconn.VLANs
 	vs         string
 	newIDs     []uint16
-	newv       VLANs
+	newv       etherconn.VLANs
 	shouldFail bool
 }
 
 func TestVLANs(t *testing.T) {
 	testCaseList := []testVLANsCase{
 		testVLANsCase{
-			v: VLANs{
-				&VLAN{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
 					ID:        100,
 					EtherType: 0x8100,
 				},
-				&VLAN{
+				&etherconn.VLAN{
 					ID:        200,
 					EtherType: 0x8200,
 				},
 			},
 			vs:     "|100|200",
 			newIDs: []uint16{111, 222},
-			newv: VLANs{
-				&VLAN{
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
 					ID:        111,
 					EtherType: 0x8100,
 				},
-				&VLAN{
+				&etherconn.VLAN{
 					ID:        222,
 					EtherType: 0x8200,
 				},
@@ -752,24 +758,24 @@ func TestVLANs(t *testing.T) {
 		},
 
 		testVLANsCase{
-			v: VLANs{
-				&VLAN{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
 					ID:        100,
 					EtherType: 0x8100,
 				},
-				&VLAN{
+				&etherconn.VLAN{
 					ID:        200,
 					EtherType: 0x8200,
 				},
 			},
 			vs:     "|100|200",
 			newIDs: []uint16{111, 222},
-			newv: VLANs{
-				&VLAN{
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
 					ID:        111,
 					EtherType: 0x8100,
 				},
-				&VLAN{
+				&etherconn.VLAN{
 					ID:        220,
 					EtherType: 0x8200,
 				},

@@ -415,6 +415,13 @@ func newRelayReceival() *RelayReceival {
 
 }
 
+func (rr *RelayReceival) GetL4Key() (r L4RecvKey) {
+	copy(r[:16], []byte(rr.LocalIP.To16()))
+	r[16] = rr.Protocol
+	binary.BigEndian.PutUint16(r[17:], rr.LocalPort)
+	return
+}
+
 // L4Endpoint represents a Layer4 (e.g. UDP) endpoint
 // type L4Endpoint struct {
 // 	IPAddr     net.IP
@@ -427,13 +434,13 @@ func newRelayReceival() *RelayReceival {
 // }
 
 type chanMap struct {
-	cmlist map[L2EndpointKey]chan *RelayReceival
+	cmlist map[interface{}]chan *RelayReceival
 	lock   *sync.RWMutex
 }
 
 func newchanMap() *chanMap {
 	r := &chanMap{}
-	r.cmlist = make(map[L2EndpointKey]chan *RelayReceival)
+	r.cmlist = make(map[interface{}]chan *RelayReceival)
 	r.lock = &sync.RWMutex{}
 	return r
 }
@@ -446,13 +453,13 @@ func (cm *chanMap) CloseAll() {
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) Set(k L2EndpointKey, v chan *RelayReceival) {
+func (cm *chanMap) Set(k interface{}, v chan *RelayReceival) {
 	cm.lock.Lock()
 	cm.cmlist[k] = v
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) SetList(ks []L2EndpointKey, v chan *RelayReceival) {
+func (cm *chanMap) SetList(ks []interface{}, v chan *RelayReceival) {
 	cm.lock.Lock()
 	for _, k := range ks {
 		cm.cmlist[k] = v
@@ -460,18 +467,18 @@ func (cm *chanMap) SetList(ks []L2EndpointKey, v chan *RelayReceival) {
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) Get(k L2EndpointKey) chan *RelayReceival {
+func (cm *chanMap) Get(k interface{}) chan *RelayReceival {
 	cm.lock.RLock()
 	defer cm.lock.RUnlock()
 	return cm.cmlist[k]
 }
 
-func (cm *chanMap) Del(k L2EndpointKey) {
+func (cm *chanMap) Del(k interface{}) {
 	cm.lock.Lock()
 	delete(cm.cmlist, k)
 	cm.lock.Unlock()
 }
-func (cm *chanMap) DelList(ks []L2EndpointKey) {
+func (cm *chanMap) DelList(ks []interface{}) {
 	cm.lock.Lock()
 	for _, k := range ks {
 		delete(cm.cmlist, k)
@@ -493,7 +500,7 @@ func (cm *chanMap) GetList() []chan *RelayReceival {
 // RawSocketRelay implements this interface;
 type PacketRelay interface {
 	// Register register a list of L2EndpointKey of a EtherConn, PacketRely send/recv pkt on its behalf,
-	// it returns two channels:
+	// it returns following channels:
 	// recv is the channel used to recive;
 	// send is the channel used to send;
 	// stop is a channel that will be closed when PacketRelay stops sending;
@@ -512,7 +519,7 @@ type PacketRelay interface {
 	IfName() string
 }
 
-// RawSocketRelay implements PacketRelay interface
+// RawSocketRelay implements PacketRelay interface, using AF_PACKET socket
 type RawSocketRelay struct {
 	conn                 *afpacket.TPacket
 	toSendChan           chan []byte
@@ -680,12 +687,17 @@ func (rsr *RawSocketRelay) log(format string, a ...interface{}) {
 
 // Register implements PacketRelay interface;
 func (rsr *RawSocketRelay) Register(ks []L2EndpointKey, recvMulticast bool) (chan *RelayReceival, chan []byte, chan struct{}) {
+	// return nil, nil, nil
 	// ch := rsr.recvList.Get(k)
 	// if ch != nil {
 	// 	return ch, rsr.toSendChan, rsr.stopToSendChan
 	// }
 	ch := make(chan *RelayReceival, rsr.perClntRecvChanDepth)
-	rsr.recvList.SetList(ks, ch)
+	list := make([]interface{}, len(ks))
+	for i := range ks {
+		list[i] = ks[i]
+	}
+	rsr.recvList.SetList(list, ch)
 	if recvMulticast {
 		//NOTE: only set one key in multicast, otherwise the EtherConn will receive multiple copies
 		rsr.multicastList.Set(ks[0], ch)
@@ -700,8 +712,12 @@ func (rsr *RawSocketRelay) RegisterDefault() (chan *RelayReceival, chan []byte, 
 
 // Deregister implements PacketRelay interface;
 func (rsr *RawSocketRelay) Deregister(ks []L2EndpointKey) {
-	rsr.recvList.DelList(ks)
-	rsr.multicastList.DelList(ks)
+	list := make([]interface{}, len(ks))
+	for i := range ks {
+		list[i] = ks[i]
+	}
+	rsr.recvList.DelList(list)
+	rsr.multicastList.DelList(list)
 }
 
 func (rsr *RawSocketRelay) send(ctx context.Context) {
@@ -777,7 +793,7 @@ L1:
 			atomic.AddUint64(counter, 1)
 			return
 		default:
-			rsr.log("channle full!!!!!!!!!!")
+			rsr.log("channle full!")
 			<-ch //channel is full, remove the oldest pkt in channel
 			if !fullcounted {
 				atomic.AddUint64(fullcounter, 1)
@@ -894,6 +910,20 @@ func (rsr *RawSocketRelay) Stop() {
 	//NOTE: without closing this, the recreating relay on same interface might cause issue
 	rsr.conn.Close()
 }
+
+// type GenericEtherConn interface {
+// 	Close() error
+// 	LocalAddr() *L2Endpoint
+// 	ReadPkt() ([]byte, net.HardwareAddr, error)
+// 	ReadPktFrom(p []byte) (int, net.HardwareAddr, error)
+// 	SetDeadline(t time.Time) error
+// 	SetReadDeadline(t time.Time) error
+// 	SetWriteDeadline(t time.Time) error
+// 	WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error)
+// 	WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error)
+// 	WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr) (int, error)
+// 	WritePktToFrom(p []byte, etype uint16, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error)
+// }
 
 // EtherConn send/recv Ethernet payload like IP packet with
 // customizable Ethernet encapsualtion like MAC and VLANs without
@@ -1111,6 +1141,7 @@ func (ec *EtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error
 
 // WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
 func (ec *EtherConn) WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+
 	var payloadtype layers.EthernetType
 	switch p[0] >> 4 {
 	case 4:
@@ -1351,8 +1382,7 @@ func (ruc *RUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 
 }
 
-// WriteToFrom is same as WriteTo except sending payload p to dst with source address as src
-func (ruc *RUDPConn) WriteToFrom(p []byte, srcaddr, dstaddr net.Addr) (int, error) {
+func (ruc *RUDPConn) buildPkt(p []byte, srcaddr, dstaddr net.Addr) ([]byte, net.IP) {
 	dst := dstaddr.(*net.UDPAddr)
 	src := srcaddr.(*net.UDPAddr)
 	buf := gopacket.NewSerializeBuffer()
@@ -1385,8 +1415,15 @@ func (ruc *RUDPConn) WriteToFrom(p []byte, srcaddr, dstaddr net.Addr) (int, erro
 		iplayer,
 		udplayer,
 		gopacket.Payload(p))
-	nexthopMAC := ruc.resolveNexthopFunc(dst.IP)
-	_, err := ruc.conn.WriteIPPktTo(buf.Bytes(), nexthopMAC)
+	return buf.Bytes(), dst.IP
+
+}
+
+// WriteToFrom is same as WriteTo except sending payload p to dst with source address as src
+func (ruc *RUDPConn) WriteToFrom(p []byte, srcaddr, dstaddr net.Addr) (int, error) {
+	pktbuf, dstip := ruc.buildPkt(p, srcaddr, dstaddr)
+	nexthopMAC := ruc.resolveNexthopFunc(dstip)
+	_, err := ruc.conn.WriteIPPktTo(pktbuf, nexthopMAC)
 	if err != nil {
 		return 0, err
 	}
