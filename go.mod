@@ -6,6 +6,8 @@ require (
 	github.com/google/gopacket v1.1.18
 	github.com/hujun-open/myaddr v0.0.0-20200628224706-46a60dd3e36b
 	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3
-	golang.org/x/sys v0.0.0-20200728102440-3e129f6d46b1
+	github.com/yuin/goldmark v1.3.7 // indirect
+	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
+	golang.org/x/sys v0.0.0-20210525143221-35b2ab0089ea
+	golang.org/x/tools v0.1.2 // indirect
 )

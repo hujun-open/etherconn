@@ -64,6 +64,102 @@ func TestSharedEtherConn(t *testing.T) {
 				},
 			},
 		},
+
+		//good case, vlan
+		testSharedEtherConnSingleCase{
+			Aconn: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				defaultConn: true,
+			},
+			Bconn: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+				},
+				defaultConn: true,
+			},
+			AUDPList: []testUDPEndpoint{
+				testUDPEndpoint{
+					IP:   net.ParseIP("1.1.1.1"),
+					Port: 100,
+				},
+				testUDPEndpoint{
+					IP:   net.ParseIP("1.1.1.2"),
+					Port: 100,
+				},
+			},
+			BUDPList: []testUDPEndpoint{
+				testUDPEndpoint{
+					IP:   net.ParseIP("2.1.1.1"),
+					Port: 100,
+				},
+				testUDPEndpoint{
+					IP:   net.ParseIP("2.1.1.2"),
+					Port: 100,
+				},
+			},
+		},
+
+		//good case, QinQ
+		testSharedEtherConnSingleCase{
+			Aconn: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+					&etherconn.VLAN{
+						ID:        200,
+						EtherType: 0x8100,
+					},
+				},
+				defaultConn: false,
+			},
+			Bconn: testEtherConnEndpoint{
+				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
+				vlans: []*etherconn.VLAN{
+					&etherconn.VLAN{
+						ID:        100,
+						EtherType: 0x8100,
+					},
+					&etherconn.VLAN{
+						ID:        200,
+						EtherType: 0x8100,
+					},
+				},
+				defaultConn: false,
+			},
+			AUDPList: []testUDPEndpoint{
+				testUDPEndpoint{
+					IP:   net.ParseIP("1.1.1.1"),
+					Port: 100,
+				},
+				testUDPEndpoint{
+					IP:   net.ParseIP("1.1.1.2"),
+					Port: 333,
+				},
+			},
+			BUDPList: []testUDPEndpoint{
+				testUDPEndpoint{
+					IP:   net.ParseIP("2.1.1.1"),
+					Port: 222,
+				},
+				testUDPEndpoint{
+					IP:   net.ParseIP("2.1.1.2"),
+					Port: 444,
+				},
+			},
+		},
 	}
 
 	testFunc := func(c testSharedEtherConnSingleCase) error {
@@ -138,24 +234,31 @@ func TestSharedEtherConn(t *testing.T) {
 		//create rudpconns
 		var AUDPConnList, BUDPConnList []*etherconn.SharingRUDPConn
 		createuconnFunc := func(e testUDPEndpoint,
-			ec *etherconn.SharedEtherConn) (*etherconn.SharingRUDPConn, error) {
+			ec *etherconn.SharedEtherConn, dstmac net.HardwareAddr) (*etherconn.SharingRUDPConn, error) {
 			return etherconn.NewSharingRUDPConn(
 				fmt.Sprintf("%v:%d", e.IP, e.Port),
 				ec,
+				[]etherconn.RUDPConnOption{
+					etherconn.WithResolveNextHopMacFunc(
+						func(net.IP) net.HardwareAddr {
+							return dstmac
+						},
+					),
+				},
 			)
 		}
 		if len(c.AUDPList) != len(c.BUDPList) {
 			return fmt.Errorf("case doesn't have same number of AUDPList and BUDPList")
 		}
 		for _, e := range c.AUDPList {
-			newconn, err := createuconnFunc(e, econnA)
+			newconn, err := createuconnFunc(e, econnA, c.Bconn.mac)
 			if err != nil {
 				return err
 			}
 			AUDPConnList = append(AUDPConnList, newconn)
 		}
 		for _, e := range c.BUDPList {
-			newconn, err := createuconnFunc(e, econnB)
+			newconn, err := createuconnFunc(e, econnB, c.Aconn.mac)
 			if err != nil {
 				return err
 			}

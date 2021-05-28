@@ -1,15 +1,15 @@
-/* EtherConn and RUDPConn are 1:1 mapping,
-which means two RUDPConn can't share same MAC+VLAN+EtherType combination;
+/*EtherConn and RUDPConn are 1:1 mapping,which means two RUDPConn can't share same MAC+VLAN+EtherType combination;
+
 SharedEtherConn and SharingRUDPConn solve this issue:
 
-                                      L2Endpointkey-1
-interface <---> PacketRelay <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-1)
-                                                   <---> SharingRUDPConn (L4Recvkey-2)
-                            			           <---> SharingRUDPConn (L4Recvkey-3)
-                                      L2Endpointkey-2
-                               <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-4)
-                                                   <---> SharingRUDPConn (L4Recvkey-5)
-                            			           <---> SharingRUDPConn (L4Recvkey-6)
+                                        L2Endpointkey-1
+    interface <---> PacketRelay <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-1)
+                                                       <---> SharingRUDPConn (L4Recvkey-2)
+                                                       <---> SharingRUDPConn (L4Recvkey-3)
+                                        L2Endpointkey-2
+                                <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-4)
+                                                       <---> SharingRUDPConn (L4Recvkey-5)
+                                                       <---> SharingRUDPConn (L4Recvkey-6)
 
 */
 package etherconn
@@ -60,9 +60,18 @@ type SharedEtherConn struct {
 	cancelFunc           context.CancelFunc
 }
 
+// SharedEtherConnOption is the option to customize new SharedEtherConnOption
 type SharedEtherConnOption func(sec *SharedEtherConn)
 
-func NewSharedEtherConn(parentctx context.Context, mac net.HardwareAddr, relay PacketRelay, ecopts []EtherConnOption, options ...SharedEtherConnOption) *SharedEtherConn {
+// NewSharedEtherConn creates a new SharedEtherConn;
+// mac is the SharedEtherConn's own MAC address;
+// relay is the underlying PacketRelay;
+// ecopts is a list of EtherConnOption that could be used to customized new SharedEtherConnOption,
+// all currently defined EtherConnOption could also be used for SharedEtherConn.
+// options is a list of SharedEtherConnOption, not used currently;
+func NewSharedEtherConn(parentctx context.Context,
+	mac net.HardwareAddr, relay PacketRelay,
+	ecopts []EtherConnOption, options ...SharedEtherConnOption) *SharedEtherConn {
 	r := new(SharedEtherConn)
 	r.econn = NewEtherConn(mac, relay, ecopts...)
 	r.recvList = newchanMap()
@@ -76,6 +85,7 @@ func NewSharedEtherConn(parentctx context.Context, mac net.HardwareAddr, relay P
 	return r
 }
 
+// Close stop the SharedEtherConn
 func (sec *SharedEtherConn) Close() {
 	sec.cancelFunc()
 }
@@ -88,7 +98,7 @@ func (sec *SharedEtherConn) Register(k L4RecvKey) (torecvch chan *RelayReceival)
 	return ch
 }
 
-// Register register a set of keys, return following channels:
+// RegisterList register a set of keys, return following channels:
 // torecvch is the channel which is used to store received packets has one of registered key in keys;
 func (sec *SharedEtherConn) RegisterList(keys []L4RecvKey) (torecvch chan *RelayReceival) {
 	ch := make(chan *RelayReceival, sec.perClntRecvChanDepth)
@@ -100,6 +110,8 @@ func (sec *SharedEtherConn) RegisterList(keys []L4RecvKey) (torecvch chan *Relay
 	return ch
 }
 
+// WriteIPPktTo sends an IP packet to dstmac,
+// with EtherConn's vlan encapsualtaion, if any;
 func (sec *SharedEtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error) {
 	return sec.econn.WriteIPPktTo(p, dstmac)
 }
@@ -144,6 +156,7 @@ func (sec *SharedEtherConn) recv(ctx context.Context) {
 	}
 }
 
+// SharingRUDPConn is the UDP connection could share same SharedEtherConn;
 type SharingRUDPConn struct {
 	udpconn          *RUDPConn
 	conn             *SharedEtherConn
@@ -152,15 +165,19 @@ type SharingRUDPConn struct {
 	recvChan         chan *RelayReceival
 }
 
+// SharingRUDPConnOptions is is the option to customize new SharingRUDPConn
 type SharingRUDPConnOptions func(srudpc *SharingRUDPConn)
 
-// NewRUDPConn creates a new RUDPConn, with specified EtherConn, and, optionally RUDPConnOption(s).
+// NewSharingRUDPConn creates a new SharingRUDPConn,
 // src is the string represents its UDP Address as format supported by net.ResolveUDPAddr().
-// note the src UDP address could be any IP address, even address not provisioned in OS, like 0.0.0.0
-func NewSharingRUDPConn(src string, c *SharedEtherConn, options ...SharingRUDPConnOptions) (*SharingRUDPConn, error) {
+// c is the underlying SharedEtherConn,
+// roptions is a list of RUDPConnOptions that use for customization,
+// supported are: WithResolveNextHopMacFunc;
+// note unlike RUDPConn, SharingRUDPConn doesn't support acceptting pkt is not destinated to own address
+func NewSharingRUDPConn(src string, c *SharedEtherConn, roptions []RUDPConnOption, options ...SharingRUDPConnOptions) (*SharingRUDPConn, error) {
 	r := new(SharingRUDPConn)
 	var err error
-	if r.udpconn, err = NewRUDPConn(src, nil); err != nil {
+	if r.udpconn, err = NewRUDPConn(src, nil, roptions...); err != nil {
 		return nil, err
 	}
 	r.conn = c
@@ -173,6 +190,7 @@ func NewSharingRUDPConn(src string, c *SharedEtherConn, options ...SharingRUDPCo
 
 }
 
+// ReadFrom implment net.PacketConn interface, it returns UDP payload;
 func (sruc *SharingRUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	sruc.readDeadlineLock.RLock()
 	deadline := sruc.readDeadline
