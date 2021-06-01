@@ -279,7 +279,7 @@ func getVLANIdsFromPacket(f gopacket.Packet) (r []uint16, etype uint16) {
 	return
 }
 
-// GetEtherAdrrInfoFromPacket return a L2Endpoint according to f, which is a Ethernet packet,
+// getEtherAdrrInfoFromPacket return a L2Endpoint according to f, which is a Ethernet packet,
 // and uses src address in f if usesrc is true, use dest address otherwise;
 // it also return the other MAC address;
 func getEtherAdrrInfoFromPacket(f gopacket.Packet, usesrc bool) (*L2Endpoint, net.HardwareAddr) {
@@ -750,7 +750,7 @@ func checkPacketBytes(p []byte) error {
 func (rsr *RawSocketRelay) IfName() string {
 	return rsr.ifName
 }
-func (rsr *RawSocketRelay) sendToChanWithCounter(receival *RelayReceival, rmac net.HardwareAddr, ch chan *RelayReceival, p gopacket.Packet, counter, fullcounter *uint64) {
+func sendToChanWithCounter(receival *RelayReceival, rmac net.HardwareAddr, ch chan *RelayReceival, p gopacket.Packet, counter, fullcounter *uint64) {
 	fullcounted := false
 	receival.RemoteMAC = rmac
 L1:
@@ -793,7 +793,6 @@ L1:
 			atomic.AddUint64(counter, 1)
 			return
 		default:
-			rsr.log("channle full!")
 			<-ch //channel is full, remove the oldest pkt in channel
 			if !fullcounted {
 				atomic.AddUint64(fullcounter, 1)
@@ -841,9 +840,9 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 		if rcvchan := rsr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
 			receival.EtherBytes = b[:ci.CaptureLength]
 			//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
-			go rsr.sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+			go sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 			if rsr.mirrorToDefault && rsr.defaultRecvChan != nil {
-				go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+				go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 			}
 		} else {
 			if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
@@ -855,14 +854,14 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 						copy(newbuf, b[:ci.CaptureLength])
 						receival.EtherBytes = newbuf
 						//TODO: might need also a new gpacket here
-						go rsr.sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
+						go sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
 					}
 				} else {
 					zeroMList = true
 				}
 				if rsr.defaultRecvChan != nil {
 					receival.EtherBytes = b[:ci.CaptureLength]
-					go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+					go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 
 				} else {
 					if zeroMList {
@@ -873,7 +872,7 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 			} else { //unicast but can't find reciver
 				if rsr.defaultRecvChan != nil {
 					receival.EtherBytes = b[:ci.CaptureLength]
-					go rsr.sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+					go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 				} else {
 					rsr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
 					atomic.AddUint64(rsr.stats.RxMiss, 1)

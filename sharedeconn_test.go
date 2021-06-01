@@ -170,40 +170,63 @@ func TestSharedEtherConn(t *testing.T) {
 			return err
 		}
 		//create pkt relay
-		filterstr := "udp or (vlan and udp)"
-		if c.Aconn.filter != "" {
-			filterstr = c.Aconn.filter
-		}
-		mods := []etherconn.RelayOption{
-			etherconn.WithDebug(true),
-			etherconn.WithBPFFilter(filterstr),
+		mods := []etherconn.XDPRelayOption{
+			etherconn.WithXDPDebug(true),
 		}
 		if c.Aconn.defaultConn {
-			mods = append(mods, etherconn.WithDefaultReceival(c.Aconn.defaultConnMirror))
+			mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))
 		}
-		peerA, err := etherconn.NewRawSocketRelay(rootctx, testifA, mods...)
+		peerA, err := etherconn.NewXDPRelay(rootctx, testifA, mods...)
 		if err != nil {
 			return err
 		}
-		defer peerA.Stop()
-
-		filterstr = "udp or (vlan and udp)"
-		if c.Bconn.filter != "" {
-			filterstr = c.Bconn.filter
-		}
-		mods = []etherconn.RelayOption{
-			etherconn.WithDebug(true),
-			etherconn.WithBPFFilter(filterstr),
+		mods = []etherconn.XDPRelayOption{
+			etherconn.WithXDPDebug(true),
 		}
 		if c.Bconn.defaultConn {
-			mods = append(mods, etherconn.WithDefaultReceival(c.Bconn.defaultConnMirror))
+			mods = append(mods, etherconn.WithXDPDefaultReceival(c.Bconn.defaultConnMirror))
 		}
-		peerB, err := etherconn.NewRawSocketRelay(rootctx, testifB, mods...)
+		peerB, err := etherconn.NewXDPRelay(rootctx, testifB, mods...)
 		if err != nil {
 			return err
 		}
-		defer peerB.Stop()
+
+		// filterstr := "udp or (vlan and udp)"
+		// if c.Aconn.filter != "" {
+		// 	filterstr = c.Aconn.filter
+		// }
+		// mods := []etherconn.RelayOption{
+		// 	etherconn.WithDebug(true),
+		// 	etherconn.WithBPFFilter(filterstr),
+		// }
+		// if c.Aconn.defaultConn {
+		// 	mods = append(mods, etherconn.WithDefaultReceival(c.Aconn.defaultConnMirror))
+		// }
+		// peerA, err := etherconn.NewRawSocketRelay(rootctx, testifA, mods...)
+		// if err != nil {
+		// 	return err
+		// }
+		// defer peerA.Stop()
+
+		// filterstr = "udp or (vlan and udp)"
+		// if c.Bconn.filter != "" {
+		// 	filterstr = c.Bconn.filter
+		// }
+		// mods = []etherconn.RelayOption{
+		// 	etherconn.WithDebug(true),
+		// 	etherconn.WithBPFFilter(filterstr),
+		// }
+		// if c.Bconn.defaultConn {
+		// 	mods = append(mods, etherconn.WithDefaultReceival(c.Bconn.defaultConnMirror))
+		// }
+		// peerB, err := etherconn.NewRawSocketRelay(rootctx, testifB, mods...)
+		// if err != nil {
+		// 	return err
+		// }
+		// defer peerB.Stop()
 		//create SharedEtherConn
+
+		defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
 		emods := []etherconn.EtherConnOption{
 			etherconn.WithVLANs(c.Aconn.vlans),
 		}
@@ -231,6 +254,7 @@ func TestSharedEtherConn(t *testing.T) {
 		}
 		econnB := etherconn.NewSharedEtherConn(rootctx, c.Bconn.mac, peerB, emods)
 		defer econnB.Close()
+
 		//create rudpconns
 		var AUDPConnList, BUDPConnList []*etherconn.SharingRUDPConn
 		createuconnFunc := func(e testUDPEndpoint,
@@ -276,7 +300,7 @@ func TestSharedEtherConn(t *testing.T) {
 				}
 				rcvdbuf := make([]byte, maxSize+100)
 				//set read timeout
-				err = rudpB.SetReadDeadline(time.Now().Add(3 * time.Second))
+				err = rudpB.SetReadDeadline(time.Now().Add(5 * time.Second))
 				if err != nil {
 					return err
 				}
@@ -291,6 +315,7 @@ func TestSharedEtherConn(t *testing.T) {
 			}
 			return nil
 		}
+		time.Sleep(3 * time.Second)
 		for i, e := range c.BUDPList {
 			err := testuconnFunc(AUDPConnList[i], BUDPConnList[i], e.IP, e.Port)
 			if err != nil {
@@ -311,7 +336,7 @@ func TestSharedEtherConn(t *testing.T) {
 			if c.shouldFail {
 				fmt.Printf("case %d failed as expected,%v\n", i, err)
 			} else {
-				t.Fatalf("case %d failed,%v", i, err)
+				t.Fatalf("case %d failed,%v\n", i, err)
 			}
 		} else {
 			if c.shouldFail {
