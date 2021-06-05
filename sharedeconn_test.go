@@ -300,7 +300,7 @@ func TestSharedEtherConn(t *testing.T) {
 				}
 				rcvdbuf := make([]byte, maxSize+100)
 				//set read timeout
-				err = rudpB.SetReadDeadline(time.Now().Add(5 * time.Second))
+				err = rudpB.SetReadDeadline(time.Now().Add(1 * time.Second))
 				if err != nil {
 					return err
 				}

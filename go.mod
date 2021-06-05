@@ -2,10 +2,9 @@ module github.com/hujun-open/etherconn
 
 go 1.14
 
-replace github.com/hujun-open/xdp => /root/gomodules/src/xdp
 
 require (
-	github.com/hujun-open/xdp v0.0.0
+	github.com/asavie/xdp v0.3.3 // indirect
 	github.com/google/gopacket v1.1.19
 	github.com/hujun-open/myaddr v0.0.0-20200628224706-46a60dd3e36b
 	github.com/vishvananda/netlink v1.1.0
