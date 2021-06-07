@@ -23,12 +23,19 @@ type testUDPEndpoint struct {
 	Port int
 }
 
+const (
+	afRelay int = iota
+	xdpRelay
+)
+
 type testSharedEtherConnSingleCase struct {
 	Aconn, Bconn       testEtherConnEndpoint
 	AUDPList, BUDPList []testUDPEndpoint
+	relayType          int
 	shouldFail         bool
 }
 
+// TestSharedEtherConn tests both RawSocketRelay and XDPRelay
 func TestSharedEtherConn(t *testing.T) {
 	testCaseList := []testSharedEtherConnSingleCase{
 		//good case, no Q
@@ -171,29 +178,55 @@ func TestSharedEtherConn(t *testing.T) {
 			return err
 		}
 		//create pkt relay
-		mods := []etherconn.XDPRelayOption{
-			etherconn.WithXDPDebug(true),
-		}
-		if c.Aconn.defaultConn {
-			mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))
-		}
-		peerA, err := etherconn.NewXDPRelay(rootctx, testifA, mods...)
-		if err != nil {
-			return err
-		}
-		mods = []etherconn.XDPRelayOption{
-			etherconn.WithXDPDebug(true),
-		}
-		if c.Bconn.defaultConn {
-			mods = append(mods, etherconn.WithXDPDefaultReceival(c.Bconn.defaultConnMirror))
-		}
-		peerB, err := etherconn.NewXDPRelay(rootctx, testifB, mods...)
-		if err != nil {
-			return err
+		var peerA, peerB etherconn.PacketRelay
+		switch c.relayType {
+		case afRelay:
+			mods := []etherconn.RelayOption{
+				etherconn.WithDebug(true),
+			}
+			if c.Aconn.defaultConn {
+				mods = append(mods, etherconn.WithDefaultReceival(c.Aconn.defaultConnMirror))
+			}
+			peerA, err = etherconn.NewRawSocketRelay(rootctx, testifA, mods...)
+			if err != nil {
+				return err
+			}
+			mods = []etherconn.RelayOption{
+				etherconn.WithDebug(true),
+			}
+			if c.Bconn.defaultConn {
+				mods = append(mods, etherconn.WithDefaultReceival(c.Bconn.defaultConnMirror))
+			}
+			peerB, err = etherconn.NewRawSocketRelay(rootctx, testifB, mods...)
+			if err != nil {
+				return err
+			}
+		case xdpRelay:
+			mods := []etherconn.XDPRelayOption{
+				etherconn.WithXDPDebug(true),
+			}
+			if c.Aconn.defaultConn {
+				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))
+			}
+			peerA, err = etherconn.NewXDPRelay(rootctx, testifA, mods...)
+			if err != nil {
+				return err
+			}
+			mods = []etherconn.XDPRelayOption{
+				etherconn.WithXDPDebug(true),
+			}
+			if c.Bconn.defaultConn {
+				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Bconn.defaultConnMirror))
+			}
+			peerB, err = etherconn.NewXDPRelay(rootctx, testifB, mods...)
+			if err != nil {
+				return err
+			}
 		}
 		defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
 		defer peerA.Stop()
 		defer peerB.Stop()
+
 		emods := []etherconn.EtherConnOption{
 			etherconn.WithVLANs(c.Aconn.vlans),
 		}
@@ -297,7 +330,7 @@ func TestSharedEtherConn(t *testing.T) {
 		}
 		return nil
 	}
-	for i, c := range testCaseList {
+	runTestFunc := func(c testSharedEtherConnSingleCase, i int) {
 		err := testFunc(c)
 		if err != nil {
 			if c.shouldFail {
@@ -310,6 +343,15 @@ func TestSharedEtherConn(t *testing.T) {
 				t.Fatalf("case %d succeed but should fail", i)
 			}
 		}
+
+	}
+	for i, c := range testCaseList {
+		t.Logf("run case %d with RawSocketRelay", i)
+		c.relayType = afRelay
+		runTestFunc(c, i)
+		t.Logf("run case %d with XDPRelay", i)
+		c.relayType = xdpRelay
+		runTestFunc(c, i)
 	}
 
 }

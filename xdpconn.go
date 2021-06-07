@@ -1,7 +1,7 @@
-// XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism;
+// XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism, so it achives higher performance than RawSocketRelay;
 // XDPRelay usage notes:
 //	1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
-//  2. XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
+//	2. AF_XDP is still relative new, see XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
 package etherconn
 
 import (

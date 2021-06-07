@@ -518,8 +518,10 @@ type PacketRelay interface {
 	Deregister(ks []L2EndpointKey)
 	// Stop stops the forwarding of PacketRelay
 	Stop()
-	//IfName return binding interface name
+	// IfName return binding interface name
 	IfName() string
+	// GetStats returns stats
+	GetStats() *RelayPacketStats
 }
 
 // RawSocketRelay implements PacketRelay interface, using AF_PACKET socket
