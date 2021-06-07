@@ -164,6 +164,7 @@ func TestSharedEtherConn(t *testing.T) {
 
 	testFunc := func(c testSharedEtherConnSingleCase) error {
 		const lifetime = 10 * time.Minute
+
 		rootctx, _ := context.WithDeadline(context.Background(), time.Now().Add(lifetime))
 		_, _, err := testCreateVETHLink(testifA, testifB)
 		if err != nil {
@@ -190,43 +191,9 @@ func TestSharedEtherConn(t *testing.T) {
 		if err != nil {
 			return err
 		}
-
-		// filterstr := "udp or (vlan and udp)"
-		// if c.Aconn.filter != "" {
-		// 	filterstr = c.Aconn.filter
-		// }
-		// mods := []etherconn.RelayOption{
-		// 	etherconn.WithDebug(true),
-		// 	etherconn.WithBPFFilter(filterstr),
-		// }
-		// if c.Aconn.defaultConn {
-		// 	mods = append(mods, etherconn.WithDefaultReceival(c.Aconn.defaultConnMirror))
-		// }
-		// peerA, err := etherconn.NewRawSocketRelay(rootctx, testifA, mods...)
-		// if err != nil {
-		// 	return err
-		// }
-		// defer peerA.Stop()
-
-		// filterstr = "udp or (vlan and udp)"
-		// if c.Bconn.filter != "" {
-		// 	filterstr = c.Bconn.filter
-		// }
-		// mods = []etherconn.RelayOption{
-		// 	etherconn.WithDebug(true),
-		// 	etherconn.WithBPFFilter(filterstr),
-		// }
-		// if c.Bconn.defaultConn {
-		// 	mods = append(mods, etherconn.WithDefaultReceival(c.Bconn.defaultConnMirror))
-		// }
-		// peerB, err := etherconn.NewRawSocketRelay(rootctx, testifB, mods...)
-		// if err != nil {
-		// 	return err
-		// }
-		// defer peerB.Stop()
-		//create SharedEtherConn
-
 		defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
+		defer peerA.Stop()
+		defer peerB.Stop()
 		emods := []etherconn.EtherConnOption{
 			etherconn.WithVLANs(c.Aconn.vlans),
 		}
@@ -292,7 +259,7 @@ func TestSharedEtherConn(t *testing.T) {
 			maxSize := 1000
 			for i := 0; i < 10; i++ {
 				p := testGenDummyIPbytes(maxSize-rand.Intn(maxSize-100), true)
-				fmt.Printf("send packet with length %d\n", len(p))
+				t.Logf("send packet with length %d\n", len(p))
 				_, err := rudpA.WriteTo(p,
 					&net.UDPAddr{IP: dst, Zone: "udp", Port: dstport})
 				if err != nil {

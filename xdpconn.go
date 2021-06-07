@@ -1,4 +1,7 @@
-// xdpconn
+// XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism;
+// XDPRelay usage notes:
+//	1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
+//  2. XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
 package etherconn
 
 import (
@@ -14,13 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	// "golang.org/x/sys/unix"
-
 	"github.com/asavie/xdp"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-
-	// "github.com/hujun-open/xdp"
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 )
@@ -51,7 +50,7 @@ func getNumQ(ifname string) (int, error) {
 }
 
 func newXdpsock(ctx context.Context, ifindex, qid int, sockopt *xdp.SocketOptions,
-	prog *xdp.Program, sendchan_depth uint,
+	prog *xdp.Program, sendchanDepth uint,
 	recvchan chan []byte, wg *sync.WaitGroup,
 	logger *log.Logger) (*xdpsock, error) {
 	var sock *xdp.Socket
@@ -65,7 +64,7 @@ func newXdpsock(ctx context.Context, ifindex, qid int, sockopt *xdp.SocketOption
 	r := &xdpsock{
 		sock:          sock,
 		recvBytesChan: recvchan,
-		toSendChan:    make(chan []byte, sendchan_depth),
+		toSendChan:    make(chan []byte, sendchanDepth),
 		wg:            wg,
 		qid:           qid,
 		logger:        logger,
@@ -90,11 +89,6 @@ func (s *xdpsock) poll(ctx context.Context) {
 	var data []byte
 	for {
 		if n := s.sock.NumFreeFillSlots(); n > 0 {
-			// ...then fetch up to that number of not-in-use
-			// descriptors and push them onto the Fill ring queue
-			// for the kernel to fill them with the received
-			// frames.
-			// xr.log("filling for %d slots", n)
 			s.sock.Fill(s.sock.GetDescs(n))
 		}
 		needSending = false
@@ -128,10 +122,7 @@ func (s *xdpsock) poll(ctx context.Context) {
 			}
 		} else {
 			if numRx > 0 {
-				// Consume the descriptors filled with received frames
-				// from the Rx ring queue.
 				rxDescs := s.sock.Receive(numRx)
-				s.log("xdp consume rxring %v", len(rxDescs))
 				for i := 0; i < len(rxDescs); i++ {
 					pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
 					copy(pktData, s.sock.GetFrame(rxDescs[i]))
@@ -142,6 +133,7 @@ func (s *xdpsock) poll(ctx context.Context) {
 	}
 }
 
+// XDPRelay is a PacketRelay implementation that uses AF_XDP Socket
 type XDPRelay struct {
 	sockList             []*xdpsock
 	qIDList              []int
@@ -156,6 +148,7 @@ type XDPRelay struct {
 	perClntRecvChanDepth uint
 	sendChanDepth        uint
 	maxEtherFrameSize    uint
+	umemNumofTrunk       uint
 	stats                *RelayPacketStats
 	logger               *log.Logger
 	ifName               string
@@ -164,8 +157,12 @@ type XDPRelay struct {
 	mirrorToDefault      bool
 	recvBytesChan        chan []byte
 }
+
+// XDPRelayOption could be used in NewXDPRelay to customize XDPRelay upon creation
 type XDPRelayOption func(xr *XDPRelay)
 
+// WithQueueID specifies a list of interface queue id (start from 0) that the XDPRelay binds to;
+// note: only use this option if you know what you are doing, since this could cause XDPRelay unable to receive some of packets.
 func WithQueueID(qidlist []int) XDPRelayOption {
 	return func(xr *XDPRelay) {
 		if xr.qIDList == nil {
@@ -175,6 +172,33 @@ func WithQueueID(qidlist []int) XDPRelayOption {
 	}
 }
 
+// WithXDPUMEMNumOfTrunk specifies the number of UMEM trunks,
+// must be power of 2.
+// the Fill/Completion/TX/RX ring size is half of specified value;
+func WithXDPUMEMNumOfTrunk(num uint) XDPRelayOption {
+	if num%2 != 0 {
+		return nil
+	}
+	return func(xr *XDPRelay) {
+		xr.umemNumofTrunk = num
+	}
+}
+
+// WithXDPMaxEtherFrameSize specifies the maximum ethernet packet size could be received by XDPRelay,
+// must be power of 2.
+func WithXDPMaxEtherFrameSize(fsize uint) XDPRelayOption {
+	if fsize%2 != 0 {
+		return nil
+	}
+	return func(xr *XDPRelay) {
+		xr.maxEtherFrameSize = fsize
+	}
+}
+
+// WithXDPDefaultReceival creates a default receiving channel,
+// all received pkt doesn't match any explicit EtherConn, will be sent to this channel;
+// using RegisterDefault to get the default receiving channel.
+// if mirroring is true, then every received pkt will be sent to this channel.
 func WithXDPDefaultReceival(mirroring bool) XDPRelayOption {
 	return func(xr *XDPRelay) {
 		xr.defaultRecvChan = make(chan *RelayReceival, xr.perClntRecvChanDepth)
@@ -182,7 +206,7 @@ func WithXDPDefaultReceival(mirroring bool) XDPRelayOption {
 	}
 }
 
-// WithDebug enable/disable debug log output
+// WithXDPDebug enable/disable debug log output
 func WithXDPDebug(debug bool) XDPRelayOption {
 	return func(relay *XDPRelay) {
 		if debug {
@@ -193,6 +217,11 @@ func WithXDPDebug(debug bool) XDPRelayOption {
 	}
 }
 
+// DefaultXDPUMEMNumOfTrunk is the default number of UMEM trunks
+const DefaultXDPUMEMNumOfTrunk = 16384
+
+// NewXDPRelay creates a new instance of XDPRelay,
+// by default, the XDPRelay binds to all queues of the specified interface
 func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOption) (*XDPRelay, error) {
 	r := &XDPRelay{
 		ifName:               ifname,
@@ -200,6 +229,7 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		perClntRecvChanDepth: DefaultPerClntRecvChanDepth,
 		sendChanDepth:        DefaultSendChanDepth,
 		maxEtherFrameSize:    DefaultMaxEtherFrameSize,
+		umemNumofTrunk:       DefaultXDPUMEMNumOfTrunk,
 		recvList:             newchanMap(),
 		multicastList:        newchanMap(),
 		stats:                newRelayPacketStats(),
@@ -232,20 +262,19 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		return nil, fmt.Errorf("failed to attach new program, %w", err)
 	}
 
-	numFrame := 16384
-	socket_option := &xdp.SocketOptions{
-		NumFrames:              numFrame,
-		FrameSize:              2048,
-		FillRingNumDescs:       numFrame / 2,
-		CompletionRingNumDescs: numFrame / 2,
-		RxRingNumDescs:         numFrame / 2,
-		TxRingNumDescs:         numFrame / 2,
+	socketOP := &xdp.SocketOptions{
+		NumFrames:              int(r.umemNumofTrunk),
+		FrameSize:              int(r.maxEtherFrameSize),
+		FillRingNumDescs:       int(r.umemNumofTrunk / 2),
+		CompletionRingNumDescs: int(r.umemNumofTrunk / 2),
+		RxRingNumDescs:         int(r.umemNumofTrunk / 2),
+		TxRingNumDescs:         int(r.umemNumofTrunk / 2),
 	}
 	var ctx context.Context
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	for _, qid := range r.qIDList {
 		r.wg.Add(1)
-		xsk, err := newXdpsock(ctx, r.ifLink.Attrs().Index, qid, socket_option,
+		xsk, err := newXdpsock(ctx, r.ifLink.Attrs().Index, qid, socketOP,
 			r.bpfProg, r.sendChanDepth, r.recvBytesChan, r.wg, r.logger)
 		if err != nil {
 			return nil, err
@@ -254,7 +283,7 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 	}
 	r.wg.Add(2)
 	go r.handleRecvBytes(ctx)
-	go r.handleEgress(ctx)
+	go r.handleSending(ctx)
 	return r, nil
 }
 func (xr *XDPRelay) log(format string, a ...interface{}) {
@@ -275,6 +304,7 @@ func (xr *XDPRelay) cleanup() {
 // Stop implements PacketRelay interface
 func (xr *XDPRelay) Stop() {
 	xr.log("relay stopping")
+	defer xr.cleanup()
 	xr.cancelFunc()
 	// this ticker is to make sure relay stop in case poll timeout is not supported by kernel(need TPacketV3)
 	// ticker time can't be too small, otherwise, if the xr.conn.Close before recv or send routine quit, it might cause panic
@@ -291,7 +321,6 @@ func (xr *XDPRelay) Stop() {
 	case <-ticker.C:
 	}
 	xr.log(fmt.Sprintf("XDPRelay stats:\n%v", xr.stats.String()))
-	xr.cleanup()
 }
 
 // IfName implements PacketRelay interface;
@@ -329,79 +358,13 @@ func (xr *XDPRelay) Deregister(ks []L2EndpointKey) {
 	xr.multicastList.DelList(list)
 }
 
+// GetStats returns the stats
 func (xr *XDPRelay) GetStats() *RelayPacketStats {
 	return xr.stats
 }
 
-// func (xr *XDPRelay) poll(ctx context.Context) {
-// 	defer xr.wg.Done()
-// 	var needSending bool
-// 	var data []byte
-// 	for {
-// 		if n := xr.sock.NumFreeFillSlots(); n > 0 {
-// 			// ...then fetch up to that number of not-in-use
-// 			// descriptors and push them onto the Fill ring queue
-// 			// for the kernel to fill them with the received
-// 			// frames.
-// 			// xr.log("filling for %d slots", n)
-// 			xr.sock.Fill(xr.sock.GetDescs(n))
-
-// 		}
-// 		needSending = false
-// 		select {
-// 		case data = <-xr.toSendChan:
-// 			needSending = true
-// 		default:
-// 		}
-// 		if needSending {
-// 			descs := xr.sock.GetDescs(1)
-// 			if len(descs) < 1 {
-// 				continue
-// 			}
-// 			copy(xr.sock.GetFrame(descs[0]), data)
-// 			descs[0].Len = uint32(len(data))
-// 			xr.sock.Transmit(descs)
-// 		}
-// 		// xr.log("polling, need sending %v", needSending)
-// 		numRx, _, err := xr.sock.Poll(1)
-// 		if err != nil {
-// 			// xr.log("poll err, %v", err)
-// 			if errors.Is(err, syscall.ETIMEDOUT) {
-
-// 				select {
-// 				case <-ctx.Done():
-// 					return
-// 				default:
-// 					continue
-// 				}
-// 			} else {
-// 				xr.log("poll error, abort, %v", err)
-// 				return
-// 			}
-// 		} else {
-// 			// xr.log("numRx %d numTX %d", numRx, numTx)
-// 			if numRx > 0 {
-// 				// Consume the descriptors filled with received frames
-// 				// from the Rx ring queue.
-// 				rxDescs := xr.sock.Receive(numRx)
-// 				xr.log("xdp consume rxring %v", len(rxDescs))
-// 				for i := 0; i < len(rxDescs); i++ {
-// 					pktData := make([]byte, len(xr.sock.GetFrame(rxDescs[i])))
-// 					copy(pktData, xr.sock.GetFrame(rxDescs[i]))
-// 					xr.recvBytesChan <- pktData
-// 				}
-// 			}
-// 			// if numComp > 0 {
-// 			// 	// go func() {
-// 			// 	// 	xr.xskSendChan <- numComp
-// 			// 	// }()
-// 			// }
-// 		}
-
-// 	}
-// }
-
-func (xr *XDPRelay) handleEgress(ctx context.Context) {
+// handleSending round-robin egress pkts via all queues
+func (xr *XDPRelay) handleSending(ctx context.Context) {
 	defer xr.wg.Done()
 	i := 0
 	max := len(xr.sockList)

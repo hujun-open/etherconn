@@ -26,7 +26,10 @@ Usage:
 1. Create a PacketRelay instance and bound to an interface.PacketRelay is the
 "forward engine" that does actual packet sending/receiving for all EtherConn
 instances registered with it; PacketRelay send/receive Ethernet packet;
-PacketRelay is an interface, currently RawSocketRelay is the only implementation.
+PacketRelay is a GO interface, currently there are two implementations:
+
+	- RawSocketRelay: uses AF_PACKET socket
+	- XDPRelay: uses AF_XDP socket
 
 2. Create one EtherConn for each source MAC+VLAN(s)+EtherType(s) combination needed,
 and register with the PacketRelay instance. EtherConn send/receive Ethernet
@@ -60,7 +63,7 @@ Limitations:
 	    * routing next-hop lookup
 	    * IP -> MAC address resolution
 	* no IP packet fragementation/reassembly support
-	* using of etherconn requires to put interface in promiscuous mode, which requires root privileges
+	* using of etherconn requires root privileges
 
 Example:
 
@@ -134,7 +137,7 @@ const (
 	// DefaultPerClntRecvChanDepth is the defaul value for per registered client(EtherConn)'s receive channel depth. e.g. recv buffer
 	DefaultPerClntRecvChanDepth = 1024
 	// DefaultMaxEtherFrameSize is the deafult max size of Ethernet frame that PacketRelay could receive from the interface
-	DefaultMaxEtherFrameSize = 2000
+	DefaultMaxEtherFrameSize = 2048
 	// DefaultRelayRecvTimeout is the default value for PacketReceive receiving timeout
 	DefaultRelayRecvTimeout = time.Second
 )
@@ -1522,8 +1525,8 @@ func (rps RelayPacketStats) String() string {
 	rs := ""
 	val := reflect.ValueOf(rps)
 	for i := 0; i < val.NumField(); i++ {
-
-		rs += fmt.Sprintf("%v:%v\n", val.Type().Field(i).Name, reflect.Indirect(val.FieldByIndex([]int{i})).Interface().(uint64))
+		rs += fmt.Sprintf("%v:%v\n", val.Type().Field(i).Name, atomic.LoadUint64(val.FieldByIndex([]int{i}).Interface().(*uint64)))
+		// rs += fmt.Sprintf("%v:%v\n", val.Type().Field(i).Name, atomic.LoadUint64(reflect.Indirect(val.FieldByIndex([]int{i})).Interface().(uint64)))
 	}
 	return rs
 }

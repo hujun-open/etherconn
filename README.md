@@ -13,47 +13,14 @@ interfaces;
 Another benefit is since etherconn bypasses "normal" Linux kernel routing and
 IP stack, in scale setup like tens of thousands conns no longer subject to
 linux kernel limitation like # of socket/fd limitations, UDP buffer size...etc;
+which also has performance gain, specially when using XDPRelay, which uses high performance AF_XDP socket.
 
 Lastly etherconn.RUDPConn implements the net.PacketConn interface,
 so it could be easily integrated into existing code;
 
 Usage:
 
-	interface <---> PacketRelay <----> EtherConn <---> RUDPConn
-	                            <----> EtherConn <---> RUDPConn
-	                            <----> EtherConn <---> RUDPConn
-
-
-1. Create a PacketRelay instance and bound to an interface.PacketRelay is the
-"forward engine" that does actual packet sending/receiving for all EtherConn
-instances registered with it; PacketRelay send/receive Ethernet packet;
-PacketRelay is an interface, currently RawSocketRelay is the only implementation.
-
-2. Create one EtherConn for each source MAC+VLAN(s)+EtherType(s) combination needed,
-and register with the PacketRelay instance. EtherConn send/receive Ethernet
-payload like IP packet;
-
-3. Create one RUDPConn instance for each UDP endpoint (IP+Port) needed, with a
-EtherConn. RUDPConn send/receive UDP payload.
-
-4. RUDPConn and EtherConn is 1:1 mapping, while EtherConn and PacketRelay is
-N:1 mapping; since EtherConn and RUDPConn is 1:1 mapping, which means EtherConn
-will forward all received UDP pkts to RUDPConn even when its IP/UDP port is
-different from RUDPConn's endpoint, and RUDPConn could either only accept correct
-pkt or accept any UDP packet;
-
-
-Egress direction:
-	UDP_payload -> RUDPConn(add UDP&IP header) -> EtherConn(add Ethernet header) -> PacketRelay
-
-Ingress direction:
-	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
-	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
-
-Note: PacketRelay parse pkt for Ethernet payload based on following rules:
-* PacketRelay has default BPFilter set to only allow IPv4/ARP/IPv6 packet
-* If Ethernet pkt doesn't have VLAN tag, dstMAC + EtherType in Ethernet header is used to locate registered EtherConn
-* else, dstMAC + VLANs +  EtherType in last VLAN tag is used
+see [doc](https://pkg.go.dev/github.com/hujun-open/etherconn)
 
 Limitations:
 
@@ -62,4 +29,4 @@ Limitations:
 	    * routing next-hop lookup
 	    * IP -> MAC address resolution
 	* no IP packet fragementation/reassembly support
-	* using of etherconn requires to put interface in promiscuous mode, which requires root privileges
+	* using of etherconn requires root privileges
