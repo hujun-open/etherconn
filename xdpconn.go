@@ -20,9 +20,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/asavie/xdp"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/hujun-open/xdp"
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 )
@@ -86,15 +86,17 @@ func (s *xdpsock) log(format string, a ...interface{}) {
 	s.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
 }
 
-func (s *xdpsock) sendPkt(data []byte) error {
+func (s *xdpsock) sendPkts(datas [][]byte) error {
 	s.sock.Complete(s.sock.NumCompleted())
-	descs := s.sock.GetDescs(1)
-	if len(descs) < 1 {
+	descs := s.sock.GetDescs(len(datas), false)
+	if len(descs) < len(datas) {
 		return fmt.Errorf("unable to get xdp desc")
 	}
-	copy(s.sock.GetFrame(descs[0]), data)
-	descs[0].Len = uint32(len(data))
-	if s.sock.Transmit(descs) != 1 {
+	for i, data := range datas {
+		copy(s.sock.GetFrame(descs[i]), data)
+		descs[i].Len = uint32(len(data))
+	}
+	if s.sock.Transmit(descs) != len(datas) {
 		return fmt.Errorf("failed to submit pkt to xdp tx ring")
 	}
 	return nil
@@ -131,7 +133,7 @@ func (s *xdpsock) recv(ctx context.Context) {
 	var err error
 	for {
 		if n := s.sock.NumFreeFillSlots(); n > 0 {
-			s.sock.Fill(s.sock.GetDescs(n))
+			s.sock.Fill(s.sock.GetDescs(n, true))
 		}
 		numRx, err = s.mypollrecv(1)
 		if err != nil {
@@ -160,118 +162,118 @@ func (s *xdpsock) recv(ctx context.Context) {
 	}
 }
 
-func (s *xdpsock) poll2(ctx context.Context) {
-	// runtime.LockOSThread()
-	// defer runtime.UnlockOSThread()
-	defer s.wg.Done()
-	var needSending bool
-	var data []byte
-	var numRx, round int
-	for {
-		round++
-		if round%100 == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-		}
-		//complets
-		s.sock.Complete(s.sock.NumCompleted())
-		//prepare fill buffer for recving
-		if n := s.sock.NumFreeFillSlots(); n > 0 {
-			s.sock.Fill(s.sock.GetDescs(n))
-		}
-		//sending
-		if s.sock.NumFreeTxSlots() > 0 {
-			needSending = false
-			select {
-			case data = <-s.toSendChan:
-				needSending = true
-			default:
-			}
-			if needSending {
-				descs := s.sock.GetDescs(1)
-				if len(descs) < 1 {
-					continue
-				}
-				copy(s.sock.GetFrame(descs[0]), data)
-				descs[0].Len = uint32(len(data))
-				s.sock.Transmit(descs)
-			}
-		}
-		numRx = s.sock.NumReceived()
-		if numRx > 0 {
-			rxDescs := s.sock.Receive(numRx)
-			for i := 0; i < len(rxDescs); i++ {
-				pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
-				copy(pktData, s.sock.GetFrame(rxDescs[i]))
-				s.recvBytesChan <- pktData
-			}
-		}
-	}
-}
+// func (s *xdpsock) poll2(ctx context.Context) {
+// 	// runtime.LockOSThread()
+// 	// defer runtime.UnlockOSThread()
+// 	defer s.wg.Done()
+// 	var needSending bool
+// 	var data []byte
+// 	var numRx, round int
+// 	for {
+// 		round++
+// 		if round%100 == 0 {
+// 			select {
+// 			case <-ctx.Done():
+// 				return
+// 			default:
+// 			}
+// 		}
+// 		//complets
+// 		s.sock.Complete(s.sock.NumCompleted())
+// 		//prepare fill buffer for recving
+// 		if n := s.sock.NumFreeFillSlots(); n > 0 {
+// 			s.sock.Fill(s.sock.GetDescs(n))
+// 		}
+// 		//sending
+// 		if s.sock.NumFreeTxSlots() > 0 {
+// 			needSending = false
+// 			select {
+// 			case data = <-s.toSendChan:
+// 				needSending = true
+// 			default:
+// 			}
+// 			if needSending {
+// 				descs := s.sock.GetDescs(1)
+// 				if len(descs) < 1 {
+// 					continue
+// 				}
+// 				copy(s.sock.GetFrame(descs[0]), data)
+// 				descs[0].Len = uint32(len(data))
+// 				s.sock.Transmit(descs)
+// 			}
+// 		}
+// 		numRx = s.sock.NumReceived()
+// 		if numRx > 0 {
+// 			rxDescs := s.sock.Receive(numRx)
+// 			for i := 0; i < len(rxDescs); i++ {
+// 				pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
+// 				copy(pktData, s.sock.GetFrame(rxDescs[i]))
+// 				s.recvBytesChan <- pktData
+// 			}
+// 		}
+// 	}
+// }
 
-func (s *xdpsock) poll(ctx context.Context) {
-	// runtime.LockOSThread()
-	// defer runtime.UnlockOSThread()
-	defer s.wg.Done()
-	var datasToSend [][]byte
-	var sendBatchSize = 100
-	var batchSize int
+// func (s *xdpsock) poll(ctx context.Context) {
+// 	// runtime.LockOSThread()
+// 	// defer runtime.UnlockOSThread()
+// 	defer s.wg.Done()
+// 	var datasToSend [][]byte
+// 	var sendBatchSize = 100
+// 	var batchSize int
 
-	for {
+// 	for {
 
-		if n := s.sock.NumFreeFillSlots(); n > 0 {
-			s.sock.Fill(s.sock.GetDescs(n))
-		}
-		datasToSend = [][]byte{}
-		for i := 0; i < sendBatchSize; i++ {
-			select {
-			case data := <-s.toSendChan:
-				datasToSend = append(datasToSend, data)
-			default:
-				break
-			}
-		}
-		batchSize = len(datasToSend)
-		if batchSize > 0 {
-			descs := s.sock.GetDescs(batchSize)
-			if len(descs) < batchSize {
-				continue
-			}
-			for i, data := range datasToSend {
-				copy(s.sock.GetFrame(descs[i]), data)
-				descs[i].Len = uint32(len(data))
-			}
-			s.sock.Transmit(descs)
-		}
-		numRx, _, err := s.sock.Poll(0)
-		if err != nil {
-			if errors.Is(err, syscall.ETIMEDOUT) {
+// 		if n := s.sock.NumFreeFillSlots(); n > 0 {
+// 			s.sock.Fill(s.sock.GetDescs(n))
+// 		}
+// 		datasToSend = [][]byte{}
+// 		for i := 0; i < sendBatchSize; i++ {
+// 			select {
+// 			case data := <-s.toSendChan:
+// 				datasToSend = append(datasToSend, data)
+// 			default:
+// 				break
+// 			}
+// 		}
+// 		batchSize = len(datasToSend)
+// 		if batchSize > 0 {
+// 			descs := s.sock.GetDescs(batchSize)
+// 			if len(descs) < batchSize {
+// 				continue
+// 			}
+// 			for i, data := range datasToSend {
+// 				copy(s.sock.GetFrame(descs[i]), data)
+// 				descs[i].Len = uint32(len(data))
+// 			}
+// 			s.sock.Transmit(descs)
+// 		}
+// 		numRx, _, err := s.sock.Poll(0)
+// 		if err != nil {
+// 			if errors.Is(err, syscall.ETIMEDOUT) {
 
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					continue
-				}
-			} else {
-				s.log("poll error, abort, %v", err)
-				return
-			}
-		} else {
-			if numRx > 0 {
-				rxDescs := s.sock.Receive(numRx)
-				for i := 0; i < len(rxDescs); i++ {
-					pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
-					copy(pktData, s.sock.GetFrame(rxDescs[i]))
-					s.recvBytesChan <- pktData
-				}
-			}
-		}
-	}
-}
+// 				select {
+// 				case <-ctx.Done():
+// 					return
+// 				default:
+// 					continue
+// 				}
+// 			} else {
+// 				s.log("poll error, abort, %v", err)
+// 				return
+// 			}
+// 		} else {
+// 			if numRx > 0 {
+// 				rxDescs := s.sock.Receive(numRx)
+// 				for i := 0; i < len(rxDescs); i++ {
+// 					pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
+// 					copy(pktData, s.sock.GetFrame(rxDescs[i]))
+// 					s.recvBytesChan <- pktData
+// 				}
+// 			}
+// 		}
+// 	}
+// }
 
 // XDPRelay is a PacketRelay implementation that uses AF_XDP Socket
 type XDPRelay struct {
@@ -518,30 +520,92 @@ func (xr *XDPRelay) GetStats() *RelayPacketStats {
 	return xr.stats
 }
 
+// // handleSending round-robin egress pkts via all queues
+// func (xr *XDPRelay) handleSending(ctx context.Context) {
+// 	defer xr.wg.Done()
+// 	var err error
+// 	i := 0
+// 	max := len(xr.sockList)
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			return
+// 		case data := <-xr.toSendChan:
+// 			// below line is for integrated appraoch
+// 			// xr.sockList[0].toSendChan <- data
+// 			/// below block is for seperated approach
+// 			if err = xr.sockList[0].sendPkt(data); err != nil {
+// 				xr.log("failed to send pkt, %v", err)
+// 				return
+// 			}
+// 			atomic.AddUint64(xr.stats.Tx, 1)
+// 			if i+1 >= max {
+// 				i = 0
+// 			} else {
+// 				i++
+// 			}
+// 		}
+// 	}
+// }
+
 // handleSending round-robin egress pkts via all queues
 func (xr *XDPRelay) handleSending(ctx context.Context) {
 	defer xr.wg.Done()
 	var err error
-	i := 0
+	xskIndex := 0
 	max := len(xr.sockList)
+	batchSize := 10
+	rcvdBatch := [][]byte{}
+	dur := 100 * time.Millisecond
+	t := time.NewTimer(dur)
+	timerArmed := true
 	for {
+		rcvdBatch = [][]byte{}
+		if timerArmed {
+			if !t.Stop() {
+				<-t.C
+			}
+		}
+		t.Reset(dur)
+		timerArmed = true
+	L1:
+		for {
+			//this loop ends at one of following conditions:
+			// . recvd batchSize
+			// . t expires && recvd at least one pkt
+			select {
+			case data := <-xr.toSendChan:
+				rcvdBatch = append(rcvdBatch, data)
+				if len(rcvdBatch) > batchSize {
+					break L1
+				}
+			case <-t.C:
+				timerArmed = false
+				if len(rcvdBatch) > 0 {
+					break L1
+				} else {
+					t.Reset(dur)
+					timerArmed = true
+				}
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case data := <-xr.toSendChan:
-			// below line is for integrated appraoch
-			// xr.sockList[0].toSendChan <- data
-			/// below block is for seperated approach
-			if err = xr.sockList[0].sendPkt(data); err != nil {
+		default:
+		}
+		if len(rcvdBatch) > 0 {
+			if err = xr.sockList[xskIndex].sendPkts(rcvdBatch); err != nil {
 				xr.log("failed to send pkt, %v", err)
 				return
 			}
-			atomic.AddUint64(xr.stats.Tx, 1)
-			if i+1 >= max {
-				i = 0
+			atomic.AddUint64(xr.stats.Tx, uint64(len(rcvdBatch)))
+			if xskIndex+1 >= max {
+				xskIndex = 0
 			} else {
-				i++
+				xskIndex++
 			}
+
 		}
 	}
 }
