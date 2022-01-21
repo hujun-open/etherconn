@@ -544,6 +544,7 @@ type RawSocketRelay struct {
 	bpfFilter       *string
 	defaultRecvChan chan *RelayReceival
 	mirrorToDefault bool
+	dedicateThread  bool
 }
 
 // RelayOption is a function use to provide customized option when creating RawSocketRelay
@@ -557,6 +558,13 @@ func WithDebug(debug bool) RelayOption {
 		} else {
 			relay.logger = nil
 		}
+	}
+}
+
+// WithDedicateThread will use dedicate OS thread for sending/recving if dedicate is true
+func WithDedicateThread(dedicate bool) RelayOption {
+	return func(relay *RawSocketRelay) {
+		relay.dedicateThread = dedicate
 	}
 }
 
@@ -611,7 +619,7 @@ func WithDefaultReceival(mirroring bool) RelayOption {
 	}
 }
 
-var exists = struct{}{}
+// var exists = struct{}{}
 
 // DefaultEtherTypes is the default list of Ethernet types for RawPacketRelay and EtherConn
 var DefaultEtherTypes = []uint16{
@@ -698,6 +706,7 @@ func (rsr *RawSocketRelay) Register(ks []L2EndpointKey, recvMulticast bool) (cha
 	// 	return ch, rsr.toSendChan, rsr.stopToSendChan
 	// }
 	ch := make(chan *RelayReceival, rsr.perClntRecvChanDepth)
+	// rsr.logger.Printf("register for %v, with recv depth %d", ks, rsr.perClntRecvChanDepth)
 	list := make([]interface{}, len(ks))
 	for i := range ks {
 		list[i] = ks[i]
@@ -726,6 +735,9 @@ func (rsr *RawSocketRelay) Deregister(ks []L2EndpointKey) {
 }
 
 func (rsr *RawSocketRelay) send(ctx context.Context) {
+	if rsr.dedicateThread {
+		runtime.LockOSThread()
+	}
 	defer rsr.wg.Done()
 	defer close(rsr.stopToSendChan)
 	for {
@@ -800,6 +812,7 @@ L1:
 		default:
 			<-ch //channel is full, remove the oldest pkt in channel
 			if !fullcounted {
+				fmt.Printf("recv chan has cap of %d and len %d\n", cap(ch), len(ch))
 				atomic.AddUint64(fullcounter, 1)
 				fullcounted = true
 			}
@@ -813,6 +826,9 @@ func (rsr *RawSocketRelay) GetStats() *RelayPacketStats {
 }
 
 func (rsr *RawSocketRelay) recv(ctx context.Context) {
+	if rsr.dedicateThread {
+		runtime.LockOSThread()
+	}
 	defer rsr.wg.Done()
 	// defer rsr.recvList.CloseAll() //TODO: this might create race issue, given sendToChanWithCounter will also use the ch, does this really need to be closed?
 	for {
@@ -833,57 +849,61 @@ func (rsr *RawSocketRelay) recv(ctx context.Context) {
 				return
 			}
 		}
-		atomic.AddUint64(rsr.stats.RxOffered, 1)
-		if checkPacketBytes(b[:ci.CaptureLength]) != nil {
-			atomic.AddUint64(rsr.stats.RxInvalid, 1)
-			continue
-		}
-		gpacket := gopacket.NewPacket(b[:ci.CaptureLength], layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
-		l2ep, rmac := getEtherAdrrInfoFromPacketWithAUXData(gpacket, false, ci.AncillaryData)
-		receival := newRelayReceival()
-		rsr.log("got pkt with l2epkey %v", l2ep.GetKey().String())
-		if rcvchan := rsr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
-			receival.EtherBytes = b[:ci.CaptureLength]
-			//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
-			go sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
-			if rsr.mirrorToDefault && rsr.defaultRecvChan != nil {
-				go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
-			}
-		} else {
-			if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
-				mList := rsr.multicastList.GetList()
-				zeroMList := false
-				if len(mList) > 0 {
-					for _, mrcvchan := range mList {
-						newbuf := make([]byte, ci.CaptureLength)
-						copy(newbuf, b[:ci.CaptureLength])
-						receival.EtherBytes = newbuf
-						//TODO: might need also a new gpacket here
-						go sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
-					}
-				} else {
-					zeroMList = true
-				}
-				if rsr.defaultRecvChan != nil {
-					receival.EtherBytes = b[:ci.CaptureLength]
-					go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+		handleRcvPkt(b[:ci.CaptureLength], rsr.stats, rsr.log, rsr.recvList,
+			rsr.mirrorToDefault, rsr.defaultRecvChan, rsr.multicastList, ci.AncillaryData)
+		// atomic.AddUint64(rsr.stats.RxOffered, 1)
+		// if checkPacketBytes(b[:ci.CaptureLength]) != nil {
+		// 	atomic.AddUint64(rsr.stats.RxInvalid, 1)
+		// 	continue
+		// }
+		// gpacket := gopacket.NewPacket(b[:ci.CaptureLength], layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+		// l2ep, rmac := getEtherAdrrInfoFromPacketWithAUXData(gpacket, false, ci.AncillaryData)
+		// receival := newRelayReceival()
+		// rsr.log("got pkt with l2epkey %v", l2ep.GetKey().String())
+		// if rcvchan := rsr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
+		// 	receival.EtherBytes = b[:ci.CaptureLength]
+		// 	//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
+		// 	//NOTE2: update @ 10/15/2021, remove creating go routine, since it will create out-of-order issue
+		// 	// fmt.Println("111111111111111111")
+		// 	sendToChanWithCounter(receival, rmac, rcvchan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+		// 	if rsr.mirrorToDefault && rsr.defaultRecvChan != nil {
+		// 		sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+		// 	}
+		// } else {
+		// 	if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
+		// 		mList := rsr.multicastList.GetList()
+		// 		zeroMList := false
+		// 		if len(mList) > 0 {
+		// 			for _, mrcvchan := range mList {
+		// 				newbuf := make([]byte, ci.CaptureLength)
+		// 				copy(newbuf, b[:ci.CaptureLength])
+		// 				receival.EtherBytes = newbuf
+		// 				//TODO: might need also a new gpacket here
+		// 				sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, rsr.stats.RxNonHitMulticast, rsr.stats.RxBufferFull)
+		// 			}
+		// 		} else {
+		// 			zeroMList = true
+		// 		}
+		// 		if rsr.defaultRecvChan != nil {
+		// 			receival.EtherBytes = b[:ci.CaptureLength]
+		// 			sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
 
-				} else {
-					if zeroMList {
-						rsr.log("ignored a multicast pkt")
-						atomic.AddUint64(rsr.stats.RxMulticastIgnored, 1)
-					}
-				}
-			} else { //unicast but can't find reciver
-				if rsr.defaultRecvChan != nil {
-					receival.EtherBytes = b[:ci.CaptureLength]
-					go sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
-				} else {
-					rsr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
-					atomic.AddUint64(rsr.stats.RxMiss, 1)
-				}
-			}
-		}
+		// 		} else {
+		// 			if zeroMList {
+		// 				rsr.log("ignored a multicast pkt")
+		// 				atomic.AddUint64(rsr.stats.RxMulticastIgnored, 1)
+		// 			}
+		// 		}
+		// 	} else { //unicast but can't find reciver
+		// 		if rsr.defaultRecvChan != nil {
+		// 			receival.EtherBytes = b[:ci.CaptureLength]
+		// 			sendToChanWithCounter(receival, rmac, rsr.defaultRecvChan, gpacket, rsr.stats.Rx, rsr.stats.RxBufferFull)
+		// 		} else {
+		// 			rsr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
+		// 			atomic.AddUint64(rsr.stats.RxMiss, 1)
+		// 		}
+		// 	}
+		// }
 	}
 }
 
@@ -1102,40 +1122,40 @@ func (ec *EtherConn) buildEthernetHeaderWithSrcVLAN(srcmac, dstmac net.HardwareA
 }
 
 // buildEthernetHeader return a Ethernet header byte slice
-func (ec *EtherConn) buildEthernetHeader(dstmac net.HardwareAddr, payloadtype uint16) []byte {
-	return ec.buildEthernetHeaderWithSrcVLAN(ec.ownMAC, dstmac, ec.vlans, payloadtype)
+// func (ec *EtherConn) buildEthernetHeader(dstmac net.HardwareAddr, payloadtype uint16) []byte {
+// 	return ec.buildEthernetHeaderWithSrcVLAN(ec.ownMAC, dstmac, ec.vlans, payloadtype)
 
-	// eth := layers.Ethernet{
-	// 	SrcMAC: ec.ownMAC,
-	// }
-	// eth.DstMAC = make(net.HardwareAddr, len(dstmac))
-	// copy(eth.DstMAC, dstmac)
-	// switch len(ec.vlans) {
-	// case 0:
-	// 	eth.EthernetType = layers.EthernetType(payloadtype)
-	// default:
-	// 	eth.EthernetType = layers.EthernetType(ec.vlans[0].EtherType)
-	// }
-	// layerList := []gopacket.SerializableLayer{&eth}
-	// for i, v := range ec.vlans {
-	// 	vlan := layers.Dot1Q{
-	// 		VLANIdentifier: v.ID,
-	// 	}
-	// 	if i == len(ec.vlans)-1 {
-	// 		vlan.Type = layers.EthernetType(payloadtype)
-	// 	} else {
-	// 		vlan.Type = layers.EthernetType(ec.vlans[i+1].EtherType)
-	// 	}
-	// 	layerList = append(layerList, &vlan)
-	// }
-	// buf := gopacket.NewSerializeBuffer()
-	// //NOTE:follow padding is needed to avoid Ethernet layer serialization to pad to 60B
-	// const paddingLen = 60
-	// layerList = append(layerList, gopacket.Payload(make([]byte, paddingLen)))
-	// opts := gopacket.SerializeOptions{}
-	// gopacket.SerializeLayers(buf, opts, layerList...)
-	// return buf.Bytes()[:len(buf.Bytes())-paddingLen]
-}
+// eth := layers.Ethernet{
+// 	SrcMAC: ec.ownMAC,
+// }
+// eth.DstMAC = make(net.HardwareAddr, len(dstmac))
+// copy(eth.DstMAC, dstmac)
+// switch len(ec.vlans) {
+// case 0:
+// 	eth.EthernetType = layers.EthernetType(payloadtype)
+// default:
+// 	eth.EthernetType = layers.EthernetType(ec.vlans[0].EtherType)
+// }
+// layerList := []gopacket.SerializableLayer{&eth}
+// for i, v := range ec.vlans {
+// 	vlan := layers.Dot1Q{
+// 		VLANIdentifier: v.ID,
+// 	}
+// 	if i == len(ec.vlans)-1 {
+// 		vlan.Type = layers.EthernetType(payloadtype)
+// 	} else {
+// 		vlan.Type = layers.EthernetType(ec.vlans[i+1].EtherType)
+// 	}
+// 	layerList = append(layerList, &vlan)
+// }
+// buf := gopacket.NewSerializeBuffer()
+// //NOTE:follow padding is needed to avoid Ethernet layer serialization to pad to 60B
+// const paddingLen = 60
+// layerList = append(layerList, gopacket.Payload(make([]byte, paddingLen)))
+// opts := gopacket.SerializeOptions{}
+// gopacket.SerializeLayers(buf, opts, layerList...)
+// return buf.Bytes()[:len(buf.Bytes())-paddingLen]
+// }
 
 // WriteIPPktTo sends an IPv4/IPv6 packet,
 // the pkt will be sent to dstmac, along with EtherConn.L2EP.VLANs.
@@ -1165,7 +1185,7 @@ func (ec *EtherConn) WritePktToFrom(p []byte, etype uint16, srcmac, dstmac net.H
 	ec.writeDeadlineLock.RLock()
 	deadline := ec.writeDeadline
 	ec.writeDeadlineLock.RUnlock()
-	d := deadline.Sub(time.Now())
+	d := time.Until(deadline)
 	timeout := false
 	select {
 	case <-ec.stopSendChan:
@@ -1232,27 +1252,27 @@ func (ec *EtherConn) WritePktTo(p []byte, etype uint16, dstmac net.HardwareAddr)
 	// return len(p), nil
 }
 
-func getIPBytesFromPacket(p gopacket.Packet) ([]byte, int) {
-	for _, l := range p.Layers() {
-		switch l.(type) {
-		case *layers.Ethernet:
-			if l.(*layers.Ethernet).EthernetType != layers.EthernetTypeDot1Q && l.(*layers.Ethernet).EthernetType != layers.EthernetTypeQinQ {
-				return l.LayerPayload(), len(l.LayerPayload())
-			}
-		case *layers.Dot1Q:
-			if l.(*layers.Dot1Q).Type != layers.EthernetTypeDot1Q && l.(*layers.Dot1Q).Type != layers.EthernetTypeQinQ {
-				return l.LayerPayload(), len(l.LayerPayload())
-			}
-		}
-	}
-	return nil, 0
-}
+// func getIPBytesFromPacket(p gopacket.Packet) ([]byte, int) {
+// 	for _, l := range p.Layers() {
+// 		switch l.(type) {
+// 		case *layers.Ethernet:
+// 			if l.(*layers.Ethernet).EthernetType != layers.EthernetTypeDot1Q && l.(*layers.Ethernet).EthernetType != layers.EthernetTypeQinQ {
+// 				return l.LayerPayload(), len(l.LayerPayload())
+// 			}
+// 		case *layers.Dot1Q:
+// 			if l.(*layers.Dot1Q).Type != layers.EthernetTypeDot1Q && l.(*layers.Dot1Q).Type != layers.EthernetTypeQinQ {
+// 				return l.LayerPayload(), len(l.LayerPayload())
+// 			}
+// 		}
+// 	}
+// 	return nil, 0
+// }
 
 func (ec *EtherConn) getReceival() (*RelayReceival, error) {
 	ec.readDeadlineLock.RLock()
 	deadline := ec.readDeadline
 	ec.readDeadlineLock.RUnlock()
-	d := deadline.Sub(time.Now())
+	d := time.Until(deadline)
 	timeout := false
 	var receival *RelayReceival
 	if d > 0 {
@@ -1303,6 +1323,8 @@ func (ec *EtherConn) Close() error {
 		l2keys = append(l2keys, ep.GetKey())
 	}
 	ec.relay.Deregister(l2keys)
+	// TODO: can't close here bluntly, otehrwise there could be send to closed channel panic
+	// close(ec.recvChan)
 	return nil
 }
 

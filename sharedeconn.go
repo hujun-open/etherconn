@@ -195,7 +195,7 @@ func (sruc *SharingRUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	sruc.readDeadlineLock.RLock()
 	deadline := sruc.readDeadline
 	sruc.readDeadlineLock.RUnlock()
-	d := deadline.Sub(time.Now())
+	d := time.Until(deadline)
 	timeout := false
 	var receival *RelayReceival
 	if d > 0 {
