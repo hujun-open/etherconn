@@ -38,14 +38,10 @@ const (
 type XDPSocketPktHandler func(pbytes []byte, sockid int) error
 
 type xdpSock struct {
-	sock                 *xdp.Socket
-	qid                  int
-	toSendChan           chan []byte //own channel
-	recvBytesChan        chan []byte //refered to XDPRelay's recvBytesChan
-	wg                   *sync.WaitGroup
-	logger               *log.Logger
-	stats                *XdpSockStats
-	rxHandler, txHandler XDPSocketPktHandler
+	sock  *xdp.Socket
+	qid   int
+	stats *XdpSockStats
+	relay *XDPRelay
 }
 
 // XdpSockStats hold per XDP socket/queue stats
@@ -84,28 +80,22 @@ func getNumQ(ifname string) (int, error) {
 	return int(chans.CombinedCount), nil
 }
 
-func newXdpsock(ctx context.Context, ifindex, qid int, sockopt *xdp.SocketOptions,
-	prog *xdp.Program, sendchanDepth uint,
-	recvchan chan []byte, wg *sync.WaitGroup,
-	logger *log.Logger, rxh, txh XDPSocketPktHandler) (*xdpSock, error) {
+func newXdpsock(ctx context.Context, qid int,
+	sockopt *xdp.SocketOptions,
+	xrelay *XDPRelay) (*xdpSock, error) {
 	var sock *xdp.Socket
 	var err error
-	if sock, err = xdp.NewSocket(ifindex, qid, sockopt); err != nil {
+	if sock, err = xdp.NewSocket(xrelay.ifLink.Attrs().Index, qid, sockopt); err != nil {
 		return nil, fmt.Errorf("failed to create new XDP socket for queue %d, %w", qid, err)
 	}
-	if err = prog.Register(qid, sock.FD()); err != nil {
+	if err = xrelay.bpfProg.Register(qid, sock.FD()); err != nil {
 		return nil, fmt.Errorf("failed to register xdp socekt to program for queue %d, %w", qid, err)
 	}
 	r := &xdpSock{
-		sock:          sock,
-		recvBytesChan: recvchan,
-		toSendChan:    make(chan []byte, sendchanDepth),
-		wg:            wg,
-		qid:           qid,
-		logger:        logger,
-		stats:         new(XdpSockStats),
-		rxHandler:     rxh,
-		txHandler:     txh,
+		relay: xrelay,
+		sock:  sock,
+		qid:   qid,
+		stats: new(XdpSockStats),
 	}
 	go r.recv(ctx)
 	return r, nil
@@ -113,12 +103,12 @@ func newXdpsock(ctx context.Context, ifindex, qid int, sockopt *xdp.SocketOption
 }
 
 func (s *xdpSock) log(format string, a ...interface{}) {
-	if s.logger == nil {
+	if s.relay.logger == nil {
 		return
 	}
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
-	s.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
+	s.relay.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
 }
 
 func (s *xdpSock) sendPkts(datas [][]byte) error {
@@ -128,8 +118,8 @@ func (s *xdpSock) sendPkts(datas [][]byte) error {
 		return fmt.Errorf("unable to get xdp desc")
 	}
 	for i, data := range datas {
-		if s.txHandler != nil {
-			s.txHandler(data, s.qid)
+		if s.relay.txh != nil {
+			s.relay.txh(data, s.qid)
 		}
 		copy(s.sock.GetFrame(descs[i]), data)
 		descs[i].Len = uint32(len(data))
@@ -169,7 +159,7 @@ func (s *xdpSock) mypollrecv(timeout int) (int, error) {
 
 func (s *xdpSock) recv(ctx context.Context) {
 	runtime.LockOSThread()
-	defer s.wg.Done()
+	defer s.relay.wg.Done()
 	var numRx int
 	var err error
 	for {
@@ -195,10 +185,12 @@ func (s *xdpSock) recv(ctx context.Context) {
 				for i := 0; i < len(rxDescs); i++ {
 					pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
 					copy(pktData, s.sock.GetFrame(rxDescs[i]))
-					if s.rxHandler != nil {
-						s.rxHandler(pktData, s.qid)
+					if s.relay.rxh != nil {
+						s.relay.rxh(pktData, s.qid)
 					}
-					s.recvBytesChan <- pktData
+					handleRcvPkt(pktData, s.relay.stats, s.relay.log,
+						s.relay.recvList, s.relay.mirrorToDefault,
+						s.relay.defaultRecvChan, s.relay.multicastList, nil)
 					s.stats.Recv++
 				}
 			}
@@ -222,17 +214,19 @@ type XDPRelay struct {
 	perClntRecvChanDepth                                                    uint
 	sendChanDepth                                                           uint
 	//maxEtherFrameSize could only be 2048 or 4096
-	maxEtherFrameSize uint
-	umemNumofTrunk    uint
-	stats             *RelayPacketStats
-	logger            *log.Logger
-	ifName            string
-	ifLink            netlink.Link
-	defaultRecvChan   chan *RelayReceival
-	mirrorToDefault   bool
-	recvBytesChan     chan []byte
-	dedicateThread    bool
-	rxh, txh          XDPSocketPktHandler
+	maxEtherFrameSize             uint
+	umemNumofTrunk                uint
+	stats                         *RelayPacketStats
+	logger                        *log.Logger
+	ifName                        string
+	ifLink                        netlink.Link
+	defaultRecvChan               chan *RelayReceival
+	mirrorToDefault               bool
+	recvBytesChan                 chan []byte
+	dedicateThread                bool
+	rxh, txh                      XDPSocketPktHandler
+	currentXDPSockAssignIndex     int
+	currentXDPSockAssignIndexLock *sync.RWMutex
 }
 
 // XDPRelayOption could be used in NewXDPRelay to customize XDPRelay upon creation
@@ -349,16 +343,18 @@ const (
 // by default, the XDPRelay binds to all queues of the specified interface
 func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOption) (*XDPRelay, error) {
 	r := &XDPRelay{
-		ifName:               ifname,
-		stopToSendChan:       make(chan struct{}),
-		perClntRecvChanDepth: DefaultPerClntRecvChanDepth,
-		sendChanDepth:        DefaultSendChanDepth,
-		maxEtherFrameSize:    DefaultXDPChunkSize,
-		umemNumofTrunk:       DefaultXDPUMEMNumOfTrunk,
-		recvList:             newchanMap(),
-		multicastList:        newchanMap(),
-		stats:                newRelayPacketStats(),
-		wg:                   new(sync.WaitGroup),
+		ifName:                        ifname,
+		stopToSendChan:                make(chan struct{}),
+		perClntRecvChanDepth:          DefaultPerClntRecvChanDepth,
+		sendChanDepth:                 DefaultSendChanDepth,
+		maxEtherFrameSize:             DefaultXDPChunkSize,
+		umemNumofTrunk:                DefaultXDPUMEMNumOfTrunk,
+		recvList:                      newchanMap(),
+		multicastList:                 newchanMap(),
+		stats:                         newRelayPacketStats(),
+		wg:                            new(sync.WaitGroup),
+		currentXDPSockAssignIndex:     0,
+		currentXDPSockAssignIndexLock: new(sync.RWMutex),
 	}
 	var err error
 	if r.ifLink, err = netlink.LinkByName(ifname); err != nil {
@@ -415,16 +411,13 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	for _, qid := range r.qIDList {
 		r.wg.Add(1)
-		xsk, err := newXdpsock(ctx, r.ifLink.Attrs().Index, qid, socketOP,
-			r.bpfProg, r.sendChanDepth, r.recvBytesChan, r.wg, r.logger, r.rxh, r.txh)
+		xsk, err := newXdpsock(ctx, qid, socketOP, r)
 		if err != nil {
 			return nil, err
 		}
 		r.sockList = append(r.sockList, xsk)
 	}
 	r.wg.Add(2)
-	go r.handleRecvBytes(ctx)
-	go r.handleSending(ctx)
 	return r, nil
 }
 func (xr *XDPRelay) log(format string, a ...interface{}) {
@@ -440,6 +433,18 @@ func (xr *XDPRelay) cleanup() {
 		xr.bpfProg.Unregister(qid)
 	}
 	xr.bpfProg.Detach(xr.ifLink.Attrs().Index)
+}
+
+//getSockAssigment is used by EtherConn to get assigned sock
+func (xr *XDPRelay) getSockAssigment() *xdpSock {
+	xr.currentXDPSockAssignIndexLock.Lock()
+	defer xr.currentXDPSockAssignIndexLock.Unlock()
+	if xr.currentXDPSockAssignIndex >= len(xr.sockList) {
+		xr.currentXDPSockAssignIndex = 0
+	}
+	r := xr.sockList[xr.currentXDPSockAssignIndex]
+	xr.currentXDPSockAssignIndex++
+	return r
 }
 
 // Stop implements PacketRelay interface
@@ -467,6 +472,11 @@ func (xr *XDPRelay) Stop() {
 // IfName implements PacketRelay interface;
 func (xr *XDPRelay) IfName() string {
 	return xr.ifName
+}
+
+//NumSocket returns number of XDP socket
+func (xr *XDPRelay) NumSocket() int {
+	return len(xr.sockList)
 }
 
 // Register implements PacketRelay interface;
@@ -511,167 +521,6 @@ func (xr *XDPRelay) GetSockStats() XdpSockStatsList {
 		r[s.qid] = s.stats
 	}
 	return r
-}
-
-// // handleSending round-robin egress pkts via all queues
-// func (xr *XDPRelay) handleSending(ctx context.Context) {
-// 	defer xr.wg.Done()
-// 	var err error
-// 	i := 0
-// 	max := len(xr.sockList)
-// 	for {
-// 		select {
-// 		case <-ctx.Done():
-// 			return
-// 		case data := <-xr.toSendChan:
-// 			// below line is for integrated appraoch
-// 			// xr.sockList[0].toSendChan <- data
-// 			/// below block is for seperated approach
-// 			if err = xr.sockList[0].sendPkt(data); err != nil {
-// 				xr.log("failed to send pkt, %v", err)
-// 				return
-// 			}
-// 			atomic.AddUint64(xr.stats.Tx, 1)
-// 			if i+1 >= max {
-// 				i = 0
-// 			} else {
-// 				i++
-// 			}
-// 		}
-// 	}
-// }
-
-// handleSending round-robin egress pkts via all queues
-func (xr *XDPRelay) handleSending(ctx context.Context) {
-	if xr.dedicateThread {
-		runtime.LockOSThread()
-	}
-	defer xr.wg.Done()
-	var err error
-	xskIndex := 0
-	max := len(xr.sockList)
-	batchSize := 10
-	rcvdBatch := [][]byte{}
-	dur := 100 * time.Millisecond
-	t := time.NewTimer(dur)
-	timerArmed := true
-	for {
-		rcvdBatch = [][]byte{}
-		if timerArmed {
-			if !t.Stop() {
-				<-t.C
-			}
-		}
-		t.Reset(dur)
-		timerArmed = true
-	L1:
-		for {
-			//this loop ends at one of following conditions:
-			// . recvd batchSize
-			// . t expires && recvd at least one pkt
-			select {
-			case data := <-xr.toSendChan:
-				rcvdBatch = append(rcvdBatch, data)
-				if len(rcvdBatch) > batchSize {
-					break L1
-				}
-			case <-t.C:
-				timerArmed = false
-				if len(rcvdBatch) > 0 {
-					break L1
-				} else {
-					t.Reset(dur)
-					timerArmed = true
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if len(rcvdBatch) > 0 {
-			if err = xr.sockList[xskIndex].sendPkts(rcvdBatch); err != nil {
-				xr.log("failed to send pkt, %v", err)
-				return
-			}
-			atomic.AddUint64(xr.stats.Tx, uint64(len(rcvdBatch)))
-			if xskIndex+1 >= max {
-				xskIndex = 0
-			} else {
-				xskIndex++
-			}
-
-		}
-	}
-}
-
-func (xr *XDPRelay) handleRecvBytes(ctx context.Context) {
-	if xr.dedicateThread {
-		runtime.LockOSThread()
-	}
-	defer xr.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case pktData := <-xr.recvBytesChan:
-			handleRcvPkt(pktData, xr.stats, xr.log, xr.recvList, xr.mirrorToDefault,
-				xr.defaultRecvChan, xr.multicastList, nil)
-			// atomic.AddUint64(xr.stats.RxOffered, 1)
-			// if checkPacketBytes(pktData) != nil {
-			// 	atomic.AddUint64(xr.stats.RxInvalid, 1)
-			// 	continue
-			// }
-			// gpacket := gopacket.NewPacket(pktData, layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
-			// l2ep, rmac := getEtherAdrrInfoFromPacket(gpacket, false)
-			// receival := newRelayReceival()
-			// xr.log("got pkt with l2epkey %v", l2ep.GetKey().String())
-			// if rcvchan := xr.recvList.Get(l2ep.GetKey()); rcvchan != nil {
-			// 	// found match etherconn
-			// 	receival.EtherBytes = pktData
-			// 	//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
-			// 	go sendToChanWithCounter(receival, rmac, rcvchan, gpacket, xr.stats.Rx, xr.stats.RxBufferFull)
-			// 	if xr.mirrorToDefault && xr.defaultRecvChan != nil {
-			// 		go sendToChanWithCounter(receival, rmac, xr.defaultRecvChan, gpacket, xr.stats.Rx, xr.stats.RxBufferFull)
-			// 	}
-			// } else {
-			// 	if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
-			// 		mList := xr.multicastList.GetList()
-			// 		zeroMList := false
-			// 		if len(mList) > 0 {
-			// 			for _, mrcvchan := range mList {
-			// 				newbuf := make([]byte, len(pktData))
-			// 				copy(newbuf, pktData)
-			// 				receival.EtherBytes = newbuf
-			// 				//TODO: might need also a new gpacket here
-			// 				go sendToChanWithCounter(receival, rmac, mrcvchan, gpacket, xr.stats.RxNonHitMulticast, xr.stats.RxBufferFull)
-			// 			}
-			// 		} else {
-			// 			zeroMList = true
-			// 		}
-			// 		if xr.defaultRecvChan != nil {
-			// 			receival.EtherBytes = pktData
-			// 			go sendToChanWithCounter(receival, rmac, xr.defaultRecvChan, gpacket, xr.stats.Rx, xr.stats.RxBufferFull)
-
-			// 		} else {
-			// 			if zeroMList {
-			// 				xr.log("ignored a multicast pkt")
-			// 				atomic.AddUint64(xr.stats.RxMulticastIgnored, 1)
-			// 			}
-			// 		}
-			// 	} else { //unicast but can't find reciver
-			// 		if xr.defaultRecvChan != nil {
-			// 			receival.EtherBytes = pktData
-			// 			go sendToChanWithCounter(receival, rmac, xr.defaultRecvChan, gpacket, xr.stats.Rx, xr.stats.RxBufferFull)
-			// 		} else {
-			// 			xr.log(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
-			// 			atomic.AddUint64(xr.stats.RxMiss, 1)
-			// 		}
-			// 	}
-			// }
-		}
-	}
 }
 
 type LogFunc func(fmt string, a ...interface{})

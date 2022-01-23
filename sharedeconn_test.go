@@ -43,12 +43,12 @@ func TestSharedEtherConn(t *testing.T) {
 			Aconn: testEtherConnEndpoint{
 				mac:         net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
 				vlans:       []*etherconn.VLAN{},
-				defaultConn: true,
+				defaultConn: false,
 			},
 			Bconn: testEtherConnEndpoint{
 				mac:         net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
 				vlans:       []*etherconn.VLAN{},
-				defaultConn: true,
+				defaultConn: false,
 			},
 			AUDPList: []testUDPEndpoint{
 				testUDPEndpoint{
@@ -300,7 +300,7 @@ func TestSharedEtherConn(t *testing.T) {
 				}
 				rcvdbuf := make([]byte, maxSize+100)
 				//set read timeout
-				err = rudpB.SetReadDeadline(time.Now().Add(1 * time.Second))
+				err = rudpB.SetReadDeadline(time.Now().Add(5 * time.Second))
 				if err != nil {
 					return err
 				}

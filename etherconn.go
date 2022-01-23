@@ -913,7 +913,7 @@ func (rsr *RawSocketRelay) Stop() {
 	rsr.cancelFunc()
 	// this ticker is to make sure relay stop in case poll timeout is not supported by kernel(need TPacketV3)
 	// ticker time can't be too small, otherwise, if the rsr.conn.Close before recv or send routine quit, it might cause panic
-	ticker := time.NewTicker(rsr.recvTimeout + 3*time.Second)
+	ticker := time.NewTicker(rsr.recvTimeout + 5*time.Second)
 	defer ticker.Stop()
 	done := make(chan bool)
 	go func(d chan bool) {
@@ -968,6 +968,7 @@ type EtherConn struct {
 	writeDeadlineLock *sync.RWMutex
 	recvMulticast     bool
 	isDefault         bool
+	xdpSock           *xdpSock
 }
 
 // EtherConnOption is a function use to provide customized option when creating EtherConn
@@ -1039,6 +1040,11 @@ func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnO
 	r.readDeadlineLock = new(sync.RWMutex)
 	r.writeDeadlineLock = new(sync.RWMutex)
 	r.relay = relay
+	switch r.relay.(type) {
+	case *XDPRelay:
+
+		r.xdpSock = r.relay.(*XDPRelay).getSockAssigment()
+	}
 	return r
 }
 
@@ -1163,9 +1169,18 @@ func (ec *EtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error
 	return ec.WriteIPPktToFrom(p, ec.ownMAC, dstmac, ec.vlans)
 }
 
-// WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
-func (ec *EtherConn) WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+func (ec *EtherConn) WriteIPPktToViaXDPSock(p []byte, dstmac net.HardwareAddr, xdpsockid int) (int, error) {
+	return ec.WriteIPPktToFromViaXDPSock(p, ec.ownMAC, dstmac, ec.vlans, xdpsockid)
+}
 
+// WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
+func (ec *EtherConn) WriteIPPktToFrom(p []byte,
+	srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+	return ec.WriteIPPktToFromViaXDPSock(p, srcmac, dstmac, vlans, -1)
+}
+
+func (ec *EtherConn) WriteIPPktToFromViaXDPSock(p []byte, srcmac, dstmac net.HardwareAddr,
+	vlans VLANs, xdpsockid int) (int, error) {
 	var payloadtype layers.EthernetType
 	switch p[0] >> 4 {
 	case 4:
@@ -1175,43 +1190,67 @@ func (ec *EtherConn) WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr,
 	default:
 		return 0, fmt.Errorf("failed to write to EtherConn, invalid IP version, %d", p[0]>>4)
 	}
-	return ec.WritePktToFrom(p, uint16(payloadtype), srcmac, dstmac, vlans)
+	return ec.WritePktToFromViaXDPSock(p, uint16(payloadtype), srcmac, dstmac, vlans, xdpsockid)
 }
 
-// WritePktToFrom is same as WritePktTo except with srcmac
-func (ec *EtherConn) WritePktToFrom(p []byte, etype uint16, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+//WritePktToFromViaXDPSock support both RawPacketRelay and XDPRelay,
+//in case xdp,if xdpsockid<0, then use EtherConn's own socket,
+//otherwise use the specified socket
+func (ec *EtherConn) WritePktToFromViaXDPSock(p []byte, etype uint16,
+	srcmac, dstmac net.HardwareAddr,
+	vlans VLANs, xdpsockid int) (int, error) {
 	h := ec.buildEthernetHeaderWithSrcVLAN(srcmac, dstmac, vlans, etype)
 	fullp := append(h, p...)
-	ec.writeDeadlineLock.RLock()
-	deadline := ec.writeDeadline
-	ec.writeDeadlineLock.RUnlock()
-	d := time.Until(deadline)
-	timeout := false
 	select {
 	case <-ec.stopSendChan:
 		return 0, ErrRelayStopped
 	default:
 	}
-	if d > 0 {
-		select {
-		case <-ec.stopSendChan:
-			return 0, ErrRelayStopped
-		case <-time.After(d):
-			timeout = true
-		case ec.sendChan <- fullp:
-		}
-	} else {
-		select {
-		case ec.sendChan <- fullp:
-		case <-ec.stopSendChan:
-			return 0, ErrRelayStopped
-		}
+	switch ec.relay.(type) {
+	case *RawSocketRelay:
+		ec.writeDeadlineLock.RLock()
+		deadline := ec.writeDeadline
+		ec.writeDeadlineLock.RUnlock()
+		d := time.Until(deadline)
+		timeout := false
+		if d > 0 {
+			select {
+			case <-ec.stopSendChan:
+				return 0, ErrRelayStopped
+			case <-time.After(d):
+				timeout = true
+			case ec.sendChan <- fullp:
+			}
+		} else {
+			select {
+			case ec.sendChan <- fullp:
+			case <-ec.stopSendChan:
+				return 0, ErrRelayStopped
+			}
 
+		}
+		if timeout {
+			return 0, ErrTimeOut
+		}
+		return len(p), nil
 	}
-	if timeout {
-		return 0, ErrTimeOut
+	//XDP relay
+	socketToUse := ec.xdpSock
+	if xdpsockid >= 0 {
+		socketToUse = ec.relay.(*XDPRelay).sockList[xdpsockid]
+	}
+	err := socketToUse.sendPkts([][]byte{fullp})
+	if err != nil {
+		return 0, err
 	}
 	return len(p), nil
+
+}
+
+// WritePktToFrom is same as WritePktTo except with srcmac
+func (ec *EtherConn) WritePktToFrom(p []byte, etype uint16, srcmac,
+	dstmac net.HardwareAddr, vlans VLANs) (int, error) {
+	return ec.WritePktToFromViaXDPSock(p, etype, srcmac, dstmac, vlans, -1)
 }
 
 // WritePktTo sends an Ethernet payload, along with specified EtherType,
