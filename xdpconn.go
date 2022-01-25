@@ -38,9 +38,9 @@ const (
 type XDPSocketPktHandler func(pbytes []byte, sockid int) error
 
 type xdpSock struct {
-	sock  *xdp.Socket
-	qid   int
-	stats *XdpSockStats
+	sock *xdp.Socket
+	qid  int
+	// stats *XdpSockStats
 	relay *XDPRelay
 }
 
@@ -95,7 +95,6 @@ func newXdpsock(ctx context.Context, qid int,
 		relay: xrelay,
 		sock:  sock,
 		qid:   qid,
-		stats: new(XdpSockStats),
 	}
 	go r.recv(ctx)
 	return r, nil
@@ -112,9 +111,14 @@ func (s *xdpSock) log(format string, a ...interface{}) {
 }
 
 func (s *xdpSock) sendPkts(datas [][]byte) error {
-	s.sock.Complete(s.sock.NumCompleted())
-	descs := s.sock.GetDescs(len(datas), false)
-	if len(descs) < len(datas) {
+	numToSend := len(datas)
+	// completed := s.sock.NumCompleted()
+	// if completed < numToSend && completed != 0 {
+	// 	return fmt.Errorf("socket's numCompleted is less than needed")
+	// }
+	// s.sock.Complete(numToSend)
+	descs := s.sock.GetDescs(numToSend, false)
+	if len(descs) < numToSend {
 		return fmt.Errorf("unable to get xdp desc")
 	}
 	for i, data := range datas {
@@ -124,11 +128,12 @@ func (s *xdpSock) sendPkts(datas [][]byte) error {
 		copy(s.sock.GetFrame(descs[i]), data)
 		descs[i].Len = uint32(len(data))
 	}
-
-	if s.sock.Transmit(descs) != len(datas) {
-		return fmt.Errorf("failed to submit pkt to xdp tx ring")
+	if rnum := s.sock.Transmit(descs); rnum != numToSend {
+		return fmt.Errorf("failed to submit pkt to xdp tx ring, need to send %d, only sent %d", numToSend, rnum)
 	}
-	s.stats.Sent += uint64(len(datas))
+	if _, _, err := s.sock.Poll(1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -191,7 +196,6 @@ func (s *xdpSock) recv(ctx context.Context) {
 					handleRcvPkt(pktData, s.relay.stats, s.relay.log,
 						s.relay.recvList, s.relay.mirrorToDefault,
 						s.relay.defaultRecvChan, s.relay.multicastList, nil)
-					s.stats.Recv++
 				}
 			}
 		}
@@ -511,16 +515,15 @@ func (xr *XDPRelay) Deregister(ks []L2EndpointKey) {
 
 // GetStats returns the stats
 func (xr *XDPRelay) GetStats() *RelayPacketStats {
-	return xr.stats
-}
-
-// GetSockStats returns stats of all sockets of xr
-func (xr *XDPRelay) GetSockStats() XdpSockStatsList {
-	r := make(XdpSockStatsList)
+	var numSend uint64 = 0
 	for _, s := range xr.sockList {
-		r[s.qid] = s.stats
+		sstat, err := s.sock.Stats()
+		if err == nil {
+			numSend += sstat.Transmitted
+		}
 	}
-	return r
+	atomic.StoreUint64(xr.stats.Tx, numSend)
+	return xr.stats
 }
 
 type LogFunc func(fmt string, a ...interface{})
