@@ -380,7 +380,7 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		if err != nil {
 			return nil, err
 		}
-		fmt.Printf("creating %d queues\n", numQ)
+		r.log("creating %d queues\n", numQ)
 		for i := 0; i < numQ; i++ {
 			r.qIDList = append(r.qIDList, i)
 		}
@@ -517,9 +517,9 @@ func (xr *XDPRelay) Deregister(ks []L2EndpointKey) {
 func (xr *XDPRelay) GetStats() *RelayPacketStats {
 	var numSend uint64 = 0
 	for _, s := range xr.sockList {
-		sstat, err := s.sock.Stats()
+		stat, err := s.sock.Stats()
 		if err == nil {
-			numSend += sstat.Transmitted
+			numSend += stat.Transmitted
 		}
 	}
 	atomic.StoreUint64(xr.stats.Tx, numSend)
