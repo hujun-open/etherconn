@@ -53,13 +53,11 @@ func (l4k L4RecvKey) String() string {
 
 // SharedEtherConn could be mapped to multiple RUDPConn
 type SharedEtherConn struct {
-	econn                         *EtherConn
-	recvList                      *chanMap
-	perClntRecvChanDepth          uint
-	cancelFunc                    context.CancelFunc
-	relay                         PacketRelay
-	currentXDPSockAssignIndex     int
-	currentXDPSockAssignIndexLock *sync.RWMutex
+	econn                *EtherConn
+	recvList             *chanMap
+	perClntRecvChanDepth uint
+	cancelFunc           context.CancelFunc
+	relay                PacketRelay
 }
 
 // SharedEtherConnOption is the option to customize new SharedEtherConnOption
@@ -84,8 +82,6 @@ func NewSharedEtherConn(parentctx context.Context,
 	var ctx context.Context
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	r.relay = relay
-	r.currentXDPSockAssignIndex = -1
-	r.currentXDPSockAssignIndexLock = new(sync.RWMutex)
 	numRecvRoutine := 1
 	switch xrelay := relay.(type) {
 	case *XDPRelay:
@@ -110,16 +106,6 @@ func (sec *SharedEtherConn) Register(k L4RecvKey) (torecvch chan *RelayReceival)
 	return ch
 }
 
-func (sec *SharedEtherConn) getNextSocketIndex() int {
-	sec.currentXDPSockAssignIndexLock.Lock()
-	defer sec.currentXDPSockAssignIndexLock.Unlock()
-	sec.currentXDPSockAssignIndex++
-	if sec.currentXDPSockAssignIndex >= sec.relay.(*XDPRelay).NumSocket() {
-		sec.currentXDPSockAssignIndex = 0
-	}
-	return sec.currentXDPSockAssignIndex
-}
-
 // RegisterList register a set of keys, return following channels:
 // torecvch is the channel which is used to store received packets has one of registered key in keys;
 func (sec *SharedEtherConn) RegisterList(keys []L4RecvKey) (torecvch chan *RelayReceival) {
@@ -138,18 +124,9 @@ func (sec *SharedEtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int
 	return sec.econn.WriteIPPktTo(p, dstmac)
 }
 
-func (sec *SharedEtherConn) WriteIPPktToViaXDPSock(p []byte, dstmac net.HardwareAddr, socketIndex int) (int, error) {
-	return sec.econn.WriteIPPktToViaXDPSock(p, dstmac, socketIndex)
-}
-
 // WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
 func (sec *SharedEtherConn) WriteIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
 	return sec.econn.WriteIPPktToFrom(p, srcmac, dstmac, vlans)
-}
-
-func (sec *SharedEtherConn) WriteIPPktToFromViaXDPSock(p []byte,
-	srcmac, dstmac net.HardwareAddr, vlans VLANs, socketIndex int) (int, error) {
-	return sec.econn.WriteIPPktToFromViaXDPSock(p, srcmac, dstmac, vlans, socketIndex)
 }
 
 // WritePktTo sends an Ethernet payload, along with specified EtherType,
@@ -194,7 +171,6 @@ type SharingRUDPConn struct {
 	readDeadline     time.Time
 	readDeadlineLock *sync.RWMutex
 	recvChan         chan *RelayReceival
-	xdpSocketIndex   int
 }
 
 // SharingRUDPConnOptions is is the option to customize new SharingRUDPConn
@@ -215,12 +191,6 @@ func NewSharingRUDPConn(src string, c *SharedEtherConn, roptions []RUDPConnOptio
 	r.conn = c
 	r.readDeadlineLock = new(sync.RWMutex)
 	r.recvChan = c.Register(NewL4RecvKeyViaUDPAddr(r.udpconn.localAddress))
-	r.xdpSocketIndex = -1 //-1 for the non-xdp version
-	switch c.relay.(type) {
-	case *XDPRelay:
-		r.xdpSocketIndex = c.getNextSocketIndex()
-	}
-
 	for _, opt := range options {
 		opt(r)
 	}
@@ -263,7 +233,7 @@ func (sruc *SharingRUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 func (sruc *SharingRUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	pktbuf, dstip := sruc.udpconn.buildPkt(p, sruc.udpconn.LocalAddr(), addr)
 	nexthopMAC := sruc.udpconn.resolveNexthopFunc(dstip)
-	_, err := sruc.conn.WriteIPPktToViaXDPSock(pktbuf, nexthopMAC, sruc.xdpSocketIndex)
+	_, err := sruc.conn.WriteIPPktTo(pktbuf, nexthopMAC)
 	if err != nil {
 		return 0, err
 	}

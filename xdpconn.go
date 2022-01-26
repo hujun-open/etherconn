@@ -1,4 +1,5 @@
-// XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism, so it achives higher performance than RawSocketRelay;
+// XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism, so it achives higher performance than RawSocketRelay in multi-core setup,
+// my tests show XDPRelay is around 2.5 times of RawSocketRelay;
 // XDPRelay usage notes:
 //	1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
 //	2. AF_XDP is still relative new, see XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
@@ -64,8 +65,8 @@ func (list XdpSockStatsList) String() string {
 	return r
 }
 
-// getNumQ use ethtool to get number of combined Q, return 1 if failed to get channel info
-func getNumQ(ifname string) (int, error) {
+// GetIFQueueNum use ethtool to get number of combined queue of the interface, return 1 if failed to get the info
+func GetIFQueueNum(ifname string) (int, error) {
 	ethHandle, err := ethtool.NewEthtool()
 	if err != nil {
 		return -1, err
@@ -97,6 +98,7 @@ func newXdpsock(ctx context.Context, qid int,
 		qid:   qid,
 	}
 	go r.recv(ctx)
+	go r.sendFromChan(ctx)
 	return r, nil
 
 }
@@ -110,45 +112,38 @@ func (s *xdpSock) log(format string, a ...interface{}) {
 	s.relay.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
 }
 
-func (s *xdpSock) sendPkts(datas [][]byte) error {
-	numToSend := len(datas)
-	// completed := s.sock.NumCompleted()
-	// if completed < numToSend && completed != 0 {
-	// 	return fmt.Errorf("socket's numCompleted is less than needed")
-	// }
-	// s.sock.Complete(numToSend)
-	descs := s.sock.GetDescs(numToSend, false)
-	if len(descs) < numToSend {
-		return fmt.Errorf("unable to get xdp desc")
-	}
-	for i, data := range datas {
-		if s.relay.txh != nil {
-			s.relay.txh(data, s.qid)
+func (s *xdpSock) sendFromChan(ctx context.Context) {
+	runtime.LockOSThread()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case data := <-s.relay.toSendChan:
+			descs := s.sock.GetDescs(1, false)
+			if len(descs) < 1 {
+				s.relay.log("unable to get xdp desc")
+				return
+			}
+			if s.relay.txh != nil {
+				s.relay.txh(data, s.qid)
+			}
+			copy(s.sock.GetFrame(descs[0]), data)
+			descs[0].Len = uint32(len(data))
+
+			if rnum := s.sock.Transmit(descs); rnum != 1 {
+				s.relay.log("failed to submit pkt to xdp tx ring, need to send %d, only sent %d", 1, rnum)
+				return
+			}
+			if _, _, err := s.sock.Poll(1); err != nil {
+				s.relay.log("xdp socket poll failed, %v", err)
+				return
+			}
 		}
-		copy(s.sock.GetFrame(descs[i]), data)
-		descs[i].Len = uint32(len(data))
 	}
-	if rnum := s.sock.Transmit(descs); rnum != numToSend {
-		return fmt.Errorf("failed to submit pkt to xdp tx ring, need to send %d, only sent %d", numToSend, rnum)
-	}
-	if _, _, err := s.sock.Poll(1); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *xdpSock) mypollrecv(timeout int) (int, error) {
 	events := int16(unix.POLLIN)
-	// if xsk.numFilled > 0 {
-	// 	events |= unix.POLLIN
-	// }
-	// if xsk.numTransmitted > 0 {
-	// 	events |= unix.POLLOUT
-	// }
-	// if events == 0 {
-	// 	return
-	// }
-
 	var pfds [1]unix.PollFd
 	pfds[0].Fd = int32(s.sock.FD())
 	pfds[0].Events = events
@@ -218,19 +213,16 @@ type XDPRelay struct {
 	perClntRecvChanDepth                                                    uint
 	sendChanDepth                                                           uint
 	//maxEtherFrameSize could only be 2048 or 4096
-	maxEtherFrameSize             uint
-	umemNumofTrunk                uint
-	stats                         *RelayPacketStats
-	logger                        *log.Logger
-	ifName                        string
-	ifLink                        netlink.Link
-	defaultRecvChan               chan *RelayReceival
-	mirrorToDefault               bool
-	recvBytesChan                 chan []byte
-	dedicateThread                bool
-	rxh, txh                      XDPSocketPktHandler
-	currentXDPSockAssignIndex     int
-	currentXDPSockAssignIndexLock *sync.RWMutex
+	maxEtherFrameSize uint
+	umemNumofTrunk    uint
+	stats             *RelayPacketStats
+	logger            *log.Logger
+	ifName            string
+	ifLink            netlink.Link
+	defaultRecvChan   chan *RelayReceival
+	mirrorToDefault   bool
+	recvBytesChan     chan []byte
+	rxh, txh          XDPSocketPktHandler
 }
 
 // XDPRelayOption could be used in NewXDPRelay to customize XDPRelay upon creation
@@ -244,13 +236,6 @@ func WithQueueID(qidlist []int) XDPRelayOption {
 			xr.qIDList = []int{}
 		}
 		xr.qIDList = append(xr.qIDList, qidlist...)
-	}
-}
-
-// WithXDPDedicateThread will use dedicate OS thread for sending/recving if dedicate is true
-func WithXDPDedicateThread(dedicate bool) XDPRelayOption {
-	return func(xr *XDPRelay) {
-		xr.dedicateThread = dedicate
 	}
 }
 
@@ -347,18 +332,16 @@ const (
 // by default, the XDPRelay binds to all queues of the specified interface
 func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOption) (*XDPRelay, error) {
 	r := &XDPRelay{
-		ifName:                        ifname,
-		stopToSendChan:                make(chan struct{}),
-		perClntRecvChanDepth:          DefaultPerClntRecvChanDepth,
-		sendChanDepth:                 DefaultSendChanDepth,
-		maxEtherFrameSize:             DefaultXDPChunkSize,
-		umemNumofTrunk:                DefaultXDPUMEMNumOfTrunk,
-		recvList:                      newchanMap(),
-		multicastList:                 newchanMap(),
-		stats:                         newRelayPacketStats(),
-		wg:                            new(sync.WaitGroup),
-		currentXDPSockAssignIndex:     0,
-		currentXDPSockAssignIndexLock: new(sync.RWMutex),
+		ifName:               ifname,
+		stopToSendChan:       make(chan struct{}),
+		perClntRecvChanDepth: DefaultPerClntRecvChanDepth,
+		sendChanDepth:        DefaultSendChanDepth,
+		maxEtherFrameSize:    DefaultXDPChunkSize,
+		umemNumofTrunk:       DefaultXDPUMEMNumOfTrunk,
+		recvList:             newchanMap(),
+		multicastList:        newchanMap(),
+		stats:                newRelayPacketStats(),
+		wg:                   new(sync.WaitGroup),
 	}
 	var err error
 	if r.ifLink, err = netlink.LinkByName(ifname); err != nil {
@@ -376,7 +359,7 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 	r.recvBytesChan = make(chan []byte, int(r.perClntRecvChanDepth)*len(r.qIDList))
 	//generate qIDList
 	if len(r.qIDList) == 0 {
-		numQ, err := getNumQ(ifname)
+		numQ, err := GetIFQueueNum(ifname)
 		if err != nil {
 			return nil, err
 		}
@@ -437,18 +420,6 @@ func (xr *XDPRelay) cleanup() {
 		xr.bpfProg.Unregister(qid)
 	}
 	xr.bpfProg.Detach(xr.ifLink.Attrs().Index)
-}
-
-//getSockAssigment is used by EtherConn to get assigned sock
-func (xr *XDPRelay) getSockAssigment() *xdpSock {
-	xr.currentXDPSockAssignIndexLock.Lock()
-	defer xr.currentXDPSockAssignIndexLock.Unlock()
-	if xr.currentXDPSockAssignIndex >= len(xr.sockList) {
-		xr.currentXDPSockAssignIndex = 0
-	}
-	r := xr.sockList[xr.currentXDPSockAssignIndex]
-	xr.currentXDPSockAssignIndex++
-	return r
 }
 
 // Stop implements PacketRelay interface

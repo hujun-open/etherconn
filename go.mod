@@ -2,7 +2,7 @@ module github.com/hujun-open/etherconn
 
 go 1.14
 
-replace github.com/asavie/xdp => ../xdp
+// replace github.com/asavie/xdp => ../xdp
 
 require (
 	// github.com/asavie/xdp v0.3.3

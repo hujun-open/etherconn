@@ -968,7 +968,6 @@ type EtherConn struct {
 	writeDeadlineLock *sync.RWMutex
 	recvMulticast     bool
 	isDefault         bool
-	xdpSock           *xdpSock
 }
 
 // EtherConnOption is a function use to provide customized option when creating EtherConn
@@ -1040,11 +1039,6 @@ func NewEtherConn(mac net.HardwareAddr, relay PacketRelay, options ...EtherConnO
 	r.readDeadlineLock = new(sync.RWMutex)
 	r.writeDeadlineLock = new(sync.RWMutex)
 	r.relay = relay
-	switch r.relay.(type) {
-	case *XDPRelay:
-
-		r.xdpSock = r.relay.(*XDPRelay).getSockAssigment()
-	}
 	return r
 }
 
@@ -1235,14 +1229,15 @@ func (ec *EtherConn) WritePktToFromViaXDPSock(p []byte, etype uint16,
 		return len(p), nil
 	}
 	//XDP relay
-	socketToUse := ec.xdpSock
-	if xdpsockid >= 0 {
-		socketToUse = ec.relay.(*XDPRelay).sockList[xdpsockid]
-	}
-	err := socketToUse.sendPkts([][]byte{fullp})
-	if err != nil {
-		return 0, err
-	}
+	// socketToUse := ec.xdpSock
+	// if xdpsockid >= 0 {
+	// 	socketToUse = ec.relay.(*XDPRelay).sockList[xdpsockid]
+	// }
+	// err := socketToUse.sendPkts([][]byte{fullp})
+	// if err != nil {
+	// 	return 0, err
+	// }
+	ec.sendChan <- fullp
 	return len(p), nil
 
 }
