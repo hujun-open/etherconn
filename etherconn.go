@@ -1090,36 +1090,24 @@ func ResolveNexhopMACWithBrodcast(ip net.IP) net.HardwareAddr {
 //getAddr return src/dst IP address from an IP packet ipbytes
 
 func (ec *EtherConn) buildEthernetHeaderWithSrcVLAN(srcmac, dstmac net.HardwareAddr, vlans VLANs, payloadtype uint16) []byte {
-	eth := layers.Ethernet{}
-	eth.SrcMAC = make(net.HardwareAddr, len(srcmac))
-	copy(eth.SrcMAC, srcmac)
-	eth.DstMAC = make(net.HardwareAddr, len(dstmac))
-	copy(eth.DstMAC, dstmac)
-	switch len(vlans) {
-	case 0:
-		eth.EthernetType = layers.EthernetType(payloadtype)
-	default:
-		eth.EthernetType = layers.EthernetType(vlans[0].EtherType)
-	}
-	layerList := []gopacket.SerializableLayer{&eth}
-	for i, v := range vlans {
-		vlan := layers.Dot1Q{
-			VLANIdentifier: v.ID,
+	ethheader := make([]byte, 14+len(vlans)*4)
+	copy(ethheader[:6], dstmac)
+	copy(ethheader[6:12], srcmac)
+	if len(vlans) == 0 {
+		binary.BigEndian.PutUint16(ethheader[12:14], payloadtype)
+	} else {
+		for i, vlan := range vlans {
+			binary.BigEndian.PutUint16(ethheader[i*4:i*4+2], vlan.EtherType)
+			binary.BigEndian.PutUint16(ethheader[i*4+2:i*4+4], vlan.ID)
 		}
-		if i == len(vlans)-1 {
-			vlan.Type = layers.EthernetType(payloadtype)
-		} else {
-			vlan.Type = layers.EthernetType(vlans[i+1].EtherType)
-		}
-		layerList = append(layerList, &vlan)
 	}
-	buf := gopacket.NewSerializeBuffer()
-	//NOTE:follow padding is needed to avoid Ethernet layer serialization to pad to 60B
-	const paddingLen = 60
-	layerList = append(layerList, gopacket.Payload(make([]byte, paddingLen)))
-	opts := gopacket.SerializeOptions{}
-	gopacket.SerializeLayers(buf, opts, layerList...)
-	return buf.Bytes()[:len(buf.Bytes())-paddingLen]
+	return ethheader
+	// //NOTE:follow padding is needed to avoid Ethernet layer serialization to pad to 60B
+	// const paddingLen = 60
+	// layerList = append(layerList, gopacket.Payload(make([]byte, paddingLen)))
+	// opts := gopacket.SerializeOptions{}
+	// gopacket.SerializeLayers(buf, opts, layerList...)
+	// return buf.Bytes()[:len(buf.Bytes())-paddingLen]
 }
 
 // buildEthernetHeader return a Ethernet header byte slice
