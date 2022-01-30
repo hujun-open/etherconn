@@ -1,8 +1,11 @@
 // XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism, so it achives higher performance than RawSocketRelay in multi-core setup,
-// my tests show XDPRelay is around 2.5 times of RawSocketRelay;
+// tests show XDPRelay could be up to 2.5 times of RawSocketRelay;
 // XDPRelay usage notes:
 //	1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
 //	2. AF_XDP is still relative new, see XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
+//  3. For best performance:
+//      a) use NIC multiple queues and multiple routine(with runtime.LockOSThread()) to drive the traffic
+//      b) the number of routines >= number of NIC queues
 package etherconn
 
 import (
@@ -229,7 +232,8 @@ type XDPRelay struct {
 type XDPRelayOption func(xr *XDPRelay)
 
 // WithQueueID specifies a list of interface queue id (start from 0) that the XDPRelay binds to;
-// note: only use this option if you know what you are doing, since this could cause XDPRelay unable to receive some of packets.
+// by default, XDPRelay will use all queues.
+// note: only use this option if you know what you are doing, since this could cause lower performance or XDPRelay unable to receive some of packets.
 func WithQueueID(qidlist []int) XDPRelayOption {
 	return func(xr *XDPRelay) {
 		if xr.qIDList == nil {
@@ -363,7 +367,6 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		if err != nil {
 			return nil, err
 		}
-		r.log("creating %d queues\n", numQ)
 		for i := 0; i < numQ; i++ {
 			r.qIDList = append(r.qIDList, i)
 		}
