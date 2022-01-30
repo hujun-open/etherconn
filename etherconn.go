@@ -140,6 +140,7 @@ const (
 	DefaultMaxEtherFrameSize = 2048
 	// DefaultRelayRecvTimeout is the default value for PacketReceive receiving timeout
 	DefaultRelayRecvTimeout = time.Second
+	DefaultTTL              = 255
 )
 
 var (
@@ -1163,10 +1164,6 @@ func (ec *EtherConn) WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error
 	return ec.WriteIPPktToFrom(p, ec.ownMAC, dstmac, ec.vlans)
 }
 
-func (ec *EtherConn) WriteIPPktToViaXDPSock(p []byte, dstmac net.HardwareAddr, xdpsockid int) (int, error) {
-	return ec.WriteIPPktToFromViaXDPSock(p, ec.ownMAC, dstmac, ec.vlans, xdpsockid)
-}
-
 // WriteIPPktToFrom is same as WriteIPPktTo beside send pkt with srcmac
 func (ec *EtherConn) WriteIPPktToFrom(p []byte,
 	srcmac, dstmac net.HardwareAddr, vlans VLANs) (int, error) {
@@ -1365,11 +1362,12 @@ func (ec *EtherConn) Close() error {
 // RUDPConn implement net.PacketConn interface;
 // it used to send/recv UDP payload, using a underlying EtherConn for pkt forwarding.
 type RUDPConn struct {
-	localAddress       *net.UDPAddr
-	addrLock           *sync.RWMutex
-	conn               *EtherConn
-	acceptAnyUDP       bool
-	resolveNexthopFunc func(net.IP) net.HardwareAddr
+	localAddress                      *net.UDPAddr
+	addrLock                          *sync.RWMutex
+	conn                              *EtherConn
+	acceptAnyUDP                      bool
+	resolveNexthopFunc                func(net.IP) net.HardwareAddr
+	ipHeader, pseudoHeader, udpHeader []byte
 }
 
 // RUDPConnOption is a function use to provide customized option when creating RUDPConn
@@ -1406,6 +1404,29 @@ func NewRUDPConn(src string, c *EtherConn, options ...RUDPConnOption) (*RUDPConn
 	r.addrLock = new(sync.RWMutex)
 	for _, opt := range options {
 		opt(r)
+	}
+	r.udpHeader = make([]byte, 8)
+	binary.BigEndian.PutUint16(r.udpHeader[:2], uint16(r.localAddress.Port)) //src port
+	if r.localAddress.IP.To4() == nil {
+		//v6
+		r.ipHeader = make([]byte, 40)
+		r.ipHeader[0] = 0x60                                  //version
+		r.ipHeader[6] = 17                                    //next header
+		r.ipHeader[7] = DefaultTTL                            //TTL
+		copy(r.ipHeader[8:24], r.localAddress.IP.To16()[:16]) //src addr
+		r.pseudoHeader = make([]byte, 40)
+		copy(r.pseudoHeader[:16], r.localAddress.IP.To16()[:16]) //src addr
+		r.pseudoHeader[39] = 17                                  //next header
+	} else {
+		//v4
+		r.ipHeader = make([]byte, 20)
+		r.ipHeader[0] = 0x45
+		r.ipHeader[8] = DefaultTTL
+		r.ipHeader[9] = 17                                   //protocol
+		copy(r.ipHeader[12:16], r.localAddress.IP.To4()[:4]) //src addr
+		r.pseudoHeader = make([]byte, 12)
+		copy(r.pseudoHeader[:4], r.localAddress.IP.To4()[:4]) //src addr
+		r.pseudoHeader[9] = 17                                //ip proto
 	}
 	return r, nil
 
@@ -1445,38 +1466,51 @@ func (ruc *RUDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
 func (ruc *RUDPConn) buildPkt(p []byte, srcaddr, dstaddr net.Addr) ([]byte, net.IP) {
 	dst := dstaddr.(*net.UDPAddr)
 	src := srcaddr.(*net.UDPAddr)
-	buf := gopacket.NewSerializeBuffer()
-	var iplayer gopacket.SerializableLayer
-	udplayer := &layers.UDP{
-		SrcPort: layers.UDPPort(src.Port),
-		DstPort: layers.UDPPort(dst.Port),
-	}
-	if dst.IP.To4() != nil {
-		iplayer = &layers.IPv4{
-			Version:  4,
-			SrcIP:    src.IP,
-			DstIP:    dst.IP,
-			Protocol: layers.IPProtocol(17),
-			TTL:      16,
-		}
-		udplayer.SetNetworkLayerForChecksum(iplayer.(*layers.IPv4))
-	} else {
-		iplayer = &layers.IPv6{
-			Version:    6,
-			SrcIP:      src.IP,
-			DstIP:      dst.IP,
-			NextHeader: layers.IPProtocol(17),
-			HopLimit:   16,
-		}
-		udplayer.SetNetworkLayerForChecksum(iplayer.(*layers.IPv6))
-	}
-	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	gopacket.SerializeLayers(buf, opts,
-		iplayer,
-		udplayer,
-		gopacket.Payload(p))
-	return buf.Bytes(), dst.IP
+	var fullp []byte
+	if len(ruc.ipHeader) > 20 {
+		//v6
+		fullp = append(make([]byte, 48), p...)
+		psuHeader := make([]byte, 40)
+		copy(psuHeader, ruc.pseudoHeader)
+		copy(fullp[:40], ruc.ipHeader)
+		copy(fullp[40:48], ruc.udpHeader)
+		//ip header
+		binary.BigEndian.PutUint16(fullp[4:6], uint16(48+len(p))) //length
+		copy(fullp[8:24], src.IP.To16()[:16])                     //src addr
+		copy(fullp[24:40], dst.IP.To16()[:16])                    //dst addr
+		//psudo header
+		copy(psuHeader[:16], src.IP.To16()[:16])                       //src addr
+		copy(psuHeader[16:32], dst.IP.To16()[:16])                     //dst addr
+		binary.BigEndian.PutUint32(psuHeader[32:36], uint32(8+len(p))) //udp len
+		//udp header
+		binary.BigEndian.PutUint16(fullp[40:42], uint16(src.Port))                     //src port
+		binary.BigEndian.PutUint16(fullp[42:44], uint16(dst.Port))                     //dst port
+		binary.BigEndian.PutUint16(fullp[44:46], uint16(8+len(p)))                     //udp len
+		binary.BigEndian.PutUint16(fullp[46:48], v6udpChecksum(fullp[40:], psuHeader)) //udp checksum
 
+	} else {
+		//v4
+		fullp = append(make([]byte, 28), p...)
+		psuHeader := make([]byte, 12)
+		copy(psuHeader, ruc.pseudoHeader)
+		copy(fullp[:20], ruc.ipHeader)
+		copy(fullp[20:28], ruc.udpHeader)
+		//ip header
+		binary.BigEndian.PutUint16(fullp[2:4], uint16(28+len(p)))          //length
+		copy(fullp[12:16], src.IP.To4()[:4])                               //src addr
+		copy(fullp[16:20], dst.IP.To4()[:4])                               //dst addr
+		binary.BigEndian.PutUint16(fullp[10:12], ipv4Checksum(fullp[:20])) //ipv4 header checksum
+		//psudo header
+		copy(psuHeader[:4], src.IP.To4()[:4])                          //src addr
+		copy(psuHeader[4:8], dst.IP.To4()[:4])                         //dst addr
+		binary.BigEndian.PutUint16(psuHeader[10:12], uint16(8+len(p))) //udp len
+		//udp header
+		binary.BigEndian.PutUint16(fullp[20:22], uint16(src.Port)) //src port
+		binary.BigEndian.PutUint16(fullp[22:24], uint16(dst.Port)) //dst port
+		binary.BigEndian.PutUint16(fullp[24:26], uint16(8+len(p))) //udp len
+		//v4 doesn't do checksum
+	}
+	return fullp, dst.IP
 }
 
 // WriteToFrom is same as WriteTo except sending payload p to dst with source address as src
