@@ -101,7 +101,7 @@ func newXdpsock(ctx context.Context, qid int,
 		qid:   qid,
 	}
 	go r.recv(ctx)
-	go r.sendFromChan(ctx)
+	go r.sendFromChan2(ctx)
 	return r, nil
 
 }
@@ -113,6 +113,56 @@ func (s *xdpSock) log(format string, a ...interface{}) {
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
 	s.relay.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
+}
+
+func (s *xdpSock) sendFromChan2(ctx context.Context) {
+	runtime.LockOSThread()
+	dataList := make([][]byte, 16)
+	dataListLen := len(dataList)
+	var data []byte
+	var gotCount int
+
+	for {
+		// select {
+		// case <-ctx.Done():
+		// 	return
+		// default:
+		// }
+		gotCount = 0
+	L1:
+		for {
+			select {
+			case data = <-s.relay.toSendChan:
+				dataList[gotCount] = data
+				gotCount++
+				if gotCount >= dataListLen {
+					break L1
+				}
+			default:
+				if gotCount > 0 {
+					break L1
+				}
+			}
+		}
+		descs := s.sock.GetDescs(gotCount, false)
+		if len(descs) < gotCount {
+			s.relay.log("unable to get xdp desc")
+			return
+		}
+		for i := 0; i < gotCount; i++ {
+			copy(s.sock.GetFrame(descs[i]), dataList[i])
+			descs[i].Len = uint32(len(dataList[i]))
+		}
+		if rnum := s.sock.Transmit(descs); rnum != gotCount {
+			s.relay.log("failed to submit pkt to xdp tx ring, need to send %d, only sent %d", gotCount, rnum)
+			return
+		}
+		if _, _, err := s.sock.Poll(1); err != nil {
+			s.relay.log("xdp socket poll failed, %v", err)
+			return
+		}
+
+	}
 }
 
 func (s *xdpSock) sendFromChan(ctx context.Context) {
