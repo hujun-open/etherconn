@@ -13,16 +13,33 @@ interfaces;
 Another benefit is since etherconn bypasses "normal" Linux kernel routing and
 IP stack, in scale setup like tens of thousands conns no longer subject to
 linux kernel limitation like # of socket/fd limitations, UDP buffer size...etc;
-which also has performance gain, specially when using XDPRelay, which uses high performance AF_XDP socket.
 
 Lastly etherconn.RUDPConn implements the net.PacketConn interface,
 so it could be easily integrated into existing code;
 
-Usage:
+etherconn supports following types of fowarding engines:
+* RawSocketRelay: uses AF_PACKET socket
+* XDPRelay: uses xdp socket
+
+XDPRelay could achieve higher performance than RawSocketRelay, specially in multi-queue, multi-core enviroment.
+
+## Performance
+Tested in a KVM VM with 8 hyperthreading cores, and Intel 82599ES 10GE NIC, achieves 1Mpps with XDPRelay (1000B packet).
+
+## What's New
+
+1. rewrite the XDPRelay implementation
+2. rewrite encap/decap code 
+3. add an example 
+
+#1 and #2 lead to significant performance improvement.
+
+
+## Usage:
 
 see [doc](https://pkg.go.dev/github.com/hujun-open/etherconn)
 
-Limitations:
+## Limitations:
 
 	* linux only
 	* since etherconn bypassed linux IP stack, it is user's job to provide functions like:
@@ -30,3 +47,4 @@ Limitations:
 	    * IP -> MAC address resolution
 	* no IP packet fragementation/reassembly support
 	* using of etherconn requires root privileges
+

@@ -11,6 +11,7 @@ SharedEtherConn and SharingRUDPConn solve this issue:
                                                        <---> SharingRUDPConn (L4Recvkey-5)
                                                        <---> SharingRUDPConn (L4Recvkey-6)
 
+For example, see the example folder of the repo.
 */
 package etherconn
 
