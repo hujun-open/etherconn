@@ -39,7 +39,7 @@ type testSharedEtherConnSingleCase struct {
 func TestSharedEtherConn(t *testing.T) {
 	testCaseList := []testSharedEtherConnSingleCase{
 		//good case, no Q
-		testSharedEtherConnSingleCase{
+		{
 			Aconn: testEtherConnEndpoint{
 				mac:         net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
 				vlans:       []*etherconn.VLAN{},
@@ -51,21 +51,21 @@ func TestSharedEtherConn(t *testing.T) {
 				defaultConn: false,
 			},
 			AUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.1"),
 					Port: 100,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.2"),
 					Port: 100,
 				},
 			},
 			BUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.1"),
 					Port: 100,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.2"),
 					Port: 100,
 				},
@@ -73,11 +73,11 @@ func TestSharedEtherConn(t *testing.T) {
 		},
 
 		//good case, vlan
-		testSharedEtherConnSingleCase{
+		{
 			Aconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
 				vlans: []*etherconn.VLAN{
-					&etherconn.VLAN{
+					{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -87,7 +87,7 @@ func TestSharedEtherConn(t *testing.T) {
 			Bconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
 				vlans: []*etherconn.VLAN{
-					&etherconn.VLAN{
+					{
 						ID:        100,
 						EtherType: 0x8100,
 					},
@@ -95,21 +95,21 @@ func TestSharedEtherConn(t *testing.T) {
 				defaultConn: true,
 			},
 			AUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.1"),
 					Port: 100,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.2"),
 					Port: 100,
 				},
 			},
 			BUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.1"),
 					Port: 100,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.2"),
 					Port: 100,
 				},
@@ -117,15 +117,15 @@ func TestSharedEtherConn(t *testing.T) {
 		},
 
 		//good case, QinQ
-		testSharedEtherConnSingleCase{
+		{
 			Aconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
 				vlans: []*etherconn.VLAN{
-					&etherconn.VLAN{
+					{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&etherconn.VLAN{
+					{
 						ID:        200,
 						EtherType: 0x8100,
 					},
@@ -135,11 +135,11 @@ func TestSharedEtherConn(t *testing.T) {
 			Bconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x2},
 				vlans: []*etherconn.VLAN{
-					&etherconn.VLAN{
+					{
 						ID:        100,
 						EtherType: 0x8100,
 					},
-					&etherconn.VLAN{
+					{
 						ID:        200,
 						EtherType: 0x8100,
 					},
@@ -147,21 +147,21 @@ func TestSharedEtherConn(t *testing.T) {
 				defaultConn: false,
 			},
 			AUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.1"),
 					Port: 100,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("1.1.1.2"),
 					Port: 333,
 				},
 			},
 			BUDPList: []testUDPEndpoint{
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.1"),
 					Port: 222,
 				},
-				testUDPEndpoint{
+				{
 					IP:   net.ParseIP("2.1.1.2"),
 					Port: 444,
 				},
@@ -172,7 +172,8 @@ func TestSharedEtherConn(t *testing.T) {
 	testFunc := func(c testSharedEtherConnSingleCase) error {
 		const lifetime = 10 * time.Minute
 
-		rootctx, _ := context.WithDeadline(context.Background(), time.Now().Add(lifetime))
+		rootctx, cancelf := context.WithDeadline(context.Background(), time.Now().Add(lifetime))
+		defer cancelf()
 		_, _, err := testCreateVETHLink(testifA, testifB)
 		if err != nil {
 			return err
@@ -202,8 +203,13 @@ func TestSharedEtherConn(t *testing.T) {
 				return err
 			}
 		case xdpRelay:
+
 			mods := []etherconn.XDPRelayOption{
+				etherconn.WithQueueID([]int{0}),
+				etherconn.WithXDPUMEMNumOfTrunk(32768),
+				// etherconn.WithXDPPerClntRecvChanDepth(32768),
 				etherconn.WithXDPDebug(true),
+				etherconn.WithXDPUMEMChunkSize(4096),
 			}
 			if c.Aconn.defaultConn {
 				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))
@@ -214,6 +220,7 @@ func TestSharedEtherConn(t *testing.T) {
 			}
 			mods = []etherconn.XDPRelayOption{
 				etherconn.WithXDPDebug(true),
+				etherconn.WithQueueID([]int{0}),
 			}
 			if c.Bconn.defaultConn {
 				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Bconn.defaultConnMirror))
@@ -223,7 +230,7 @@ func TestSharedEtherConn(t *testing.T) {
 				return err
 			}
 		}
-		defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
+		// defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
 		defer peerA.Stop()
 		defer peerB.Stop()
 
@@ -346,10 +353,13 @@ func TestSharedEtherConn(t *testing.T) {
 
 	}
 	for i, c := range testCaseList {
-		t.Logf("run case %d with RawSocketRelay", i)
+		// if i != 2 {
+		// 	continue
+		// }
+		t.Logf("====> run case %d with RawSocketRelay", i)
 		c.relayType = afRelay
 		runTestFunc(c, i)
-		t.Logf("run case %d with XDPRelay", i)
+		t.Logf("====> run case %d with XDPRelay", i)
 		c.relayType = xdpRelay
 		runTestFunc(c, i)
 	}

@@ -63,6 +63,12 @@ type SharedEtherConn struct {
 // SharedEtherConnOption is the option to customize new SharedEtherConnOption
 type SharedEtherConnOption func(sec *SharedEtherConn)
 
+func WithSharedEConnPerClntRecvChanDepth(depth uint) SharedEtherConnOption {
+	return func(sec *SharedEtherConn) {
+		sec.perClntRecvChanDepth = depth
+	}
+}
+
 // NewSharedEtherConn creates a new SharedEtherConn;
 // mac is the SharedEtherConn's own MAC address;
 // relay is the underlying PacketRelay;
