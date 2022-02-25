@@ -625,3 +625,16 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 		}
 	}
 }
+
+// SetIfVLANOffloading set the HW VLAN offloading feature on/off for the interface,
+// turning the feautre off is needed when using XDPRelay and can't get expected vlan tags in received packet.
+func SetIfVLANOffloading(ifname string, enable bool) error {
+	etool, err := ethtool.NewEthtool()
+	if err != nil {
+		return err
+	}
+	vlanoffloadingsetting := make(map[string]bool)
+	vlanoffloadingsetting["rx-vlan-hw-parse"] = enable
+	vlanoffloadingsetting["tx-vlan-hw-insert"] = enable
+	return etool.Change(ifname, vlanoffloadingsetting)
+}
