@@ -583,7 +583,7 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 		//NOTE2: update @ 10/15/2021, remove creating go routine, since it will create out-of-order issue
 		sendToChanWithCounter(recvial, rcvchan, stats.Rx, stats.RxBufferFull)
 		if mirrorToDefault && defaultRecvChan != nil {
-			sendToChanWithCounter(recvial, defaultRecvChan, stats.Rx, stats.RxBufferFull)
+			sendToChanWithCounter(recvial, defaultRecvChan, stats.RxDefault, stats.RxBufferFull)
 		}
 	} else {
 		//TODO: could use an optimization here, where parsing only done once iso calling sendToChanWithCounter multiple times
@@ -603,7 +603,7 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 				zeroMList = true
 			}
 			if defaultRecvChan != nil {
-				sendToChanWithCounter(recvial, defaultRecvChan, stats.Rx, stats.RxBufferFull)
+				sendToChanWithCounter(recvial, defaultRecvChan, stats.RxDefault, stats.RxBufferFull)
 
 			} else {
 				if zeroMList {
@@ -615,7 +615,7 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 			}
 		} else { //unicast but can't find reciver
 			if defaultRecvChan != nil {
-				sendToChanWithCounter(recvial, defaultRecvChan, stats.Rx, stats.RxBufferFull)
+				sendToChanWithCounter(recvial, defaultRecvChan, stats.RxDefault, stats.RxBufferFull)
 			} else {
 				if logf != nil {
 					logf(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))

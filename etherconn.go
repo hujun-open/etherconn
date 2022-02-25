@@ -306,7 +306,7 @@ func getL2EPandReceival(p []byte, auxdata []interface{}) (*L2Endpoint, *RelayRec
 		rcv.Protocol = rcv.EtherPayloadBytes[6]
 		rcv.RemoteIP = rcv.EtherPayloadBytes[8:24]
 		rcv.LocalIP = rcv.EtherPayloadBytes[24:40]
-		l4index = 40 //NOTE: this means no supporting of any ipv4 options
+		l4index = 40 //NOTE: this means no supporting of any ipv6 options
 	}
 	switch rcv.Protocol {
 	case 17: //udp
@@ -314,7 +314,6 @@ func getL2EPandReceival(p []byte, auxdata []interface{}) (*L2Endpoint, *RelayRec
 		rcv.LocalPort = binary.BigEndian.Uint16(rcv.EtherPayloadBytes[l4index+2 : l4index+4])
 		rcv.TransportPayloadBytes = rcv.EtherPayloadBytes[l4index+8:]
 	}
-
 	return l2ep, rcv
 }
 
@@ -1296,9 +1295,9 @@ func (ruc *RUDPConn) buildPkt(p []byte, srcaddr, dstaddr net.Addr) ([]byte, net.
 		copy(fullp[:40], ruc.ipHeader)
 		copy(fullp[40:48], ruc.udpHeader)
 		//ip header
-		binary.BigEndian.PutUint16(fullp[4:6], uint16(48+len(p))) //length
-		copy(fullp[8:24], src.IP.To16()[:16])                     //src addr
-		copy(fullp[24:40], dst.IP.To16()[:16])                    //dst addr
+		binary.BigEndian.PutUint16(fullp[4:6], uint16(8+len(p))) //payload length
+		copy(fullp[8:24], src.IP.To16()[:16])                    //src addr
+		copy(fullp[24:40], dst.IP.To16()[:16])                   //dst addr
 		//psudo header
 		copy(psuHeader[:16], src.IP.To16()[:16])                       //src addr
 		copy(psuHeader[16:32], dst.IP.To16()[:16])                     //dst addr
@@ -1413,8 +1412,10 @@ type RelayPacketStats struct {
 	RxBufferFull *uint64
 	// RxMiss is the number of pkts relay can't find receiver
 	RxMiss *uint64
-	// Rx is the number of pkts relay successfully deliver to receiver
+	// Rx is the number of pkts relay successfully deliver to receiver, not including pkt sent to default channel
 	Rx *uint64
+	// RxDefault is the number of pkts relay deliver to the default rcv channel
+	RxDefault *uint64
 	// RxNonHitMulticast is the number of multicast pkts that doesn't have direct receiver, but deliver to a multicast recevier
 	RxNonHitMulticast *uint64
 	// RxMulticastIgnored is the number of multicast pkts ignored
@@ -1429,6 +1430,7 @@ func newRelayPacketStats() *RelayPacketStats {
 	rps.RxBufferFull = new(uint64)
 	rps.RxMiss = new(uint64)
 	rps.Rx = new(uint64)
+	rps.RxDefault = new(uint64)
 	rps.RxNonHitMulticast = new(uint64)
 	rps.RxMulticastIgnored = new(uint64)
 	return rps
