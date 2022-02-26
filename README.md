@@ -1,5 +1,5 @@
 # etherconn
-[![Build Status](https://travis-ci.org/hujun-open/etherconn.svg?branch=master)](https://travis-ci.org/hujun-open/etherconn)
+![Build Status](https://github.com/hujun-open/etherconn/actions/workflows/main.yml/badge.svg)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/hujun-open/etherconn)](https://pkg.go.dev/github.com/hujun-open/etherconn)
 
 Package etherconn is a golang pkg that allow user to send/receive Ethernet
