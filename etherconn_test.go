@@ -134,7 +134,7 @@ const (
 
 func TestEtherConn(t *testing.T) {
 	testCaseList := []testEtherConnSingleCase{
-		//good case, no Q
+		//0 good case, no Q
 		{
 			A: testEtherConnEndpoint{
 				mac:   net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -145,7 +145,7 @@ func TestEtherConn(t *testing.T) {
 				vlans: []*etherconn.VLAN{},
 			},
 		},
-		//good case, dot1q
+		//1 good case, dot1q
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -166,7 +166,7 @@ func TestEtherConn(t *testing.T) {
 				},
 			},
 		},
-		//good case, qinq
+		//2 good case, qinq
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -195,7 +195,7 @@ func TestEtherConn(t *testing.T) {
 				},
 			},
 		},
-		//negtive case, blocked by filter
+		//3 negtive case, blocked by filter
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -227,7 +227,7 @@ func TestEtherConn(t *testing.T) {
 			shouldFail: true,
 		},
 
-		//negative case, different vlan
+		//4 negative case, different vlan
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -250,7 +250,7 @@ func TestEtherConn(t *testing.T) {
 			shouldFail: true,
 		},
 
-		//negative case, wrong mac
+		//5 negative case, wrong mac
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -274,7 +274,7 @@ func TestEtherConn(t *testing.T) {
 			shouldFail: true,
 		},
 
-		//send to broadcast good case, even recv has wrong vlan id
+		//6 send to broadcast good case, even recv has wrong vlan id
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -299,7 +299,7 @@ func TestEtherConn(t *testing.T) {
 			shouldFail: false,
 		},
 
-		//send to broadcast negative case, recv doesn't accept multicast
+		//7 send to broadcast negative case, recv doesn't accept multicast
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -324,7 +324,7 @@ func TestEtherConn(t *testing.T) {
 			shouldFail: true,
 		},
 
-		//default receive case, no mirroring, no matching vlan&mac
+		//8 default receive case, no mirroring, no matching vlan&mac
 		{
 			A: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x12, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -555,14 +555,24 @@ func TestEtherConn(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			n, _, err := econnB.ReadPktFrom(rcvdbuf)
-			if err != nil {
-				return err
+			good := false
+			for i := 0; i < 6; i++ {
+				n, _, err := econnB.ReadPktFrom(rcvdbuf)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(p, rcvdbuf[:n]) {
+					if !c.B.defaultConn {
+						return fmt.Errorf("recvied bytes is different from sent for pkt %d, sent %v, recv %v", i, p, rcvdbuf[:n])
+					}
+				} else {
+					fmt.Printf("recved a good  pkt\n")
+					good = true
+					break
+				}
 			}
-			if !bytes.Equal(p, rcvdbuf[:n]) {
-				return fmt.Errorf("recvied bytes is different from sent for pkt %d, sent %v, recv %v", i, p, rcvdbuf[:n])
-			} else {
-				fmt.Printf("recved a good  pkt\n")
+			if !good {
+				return fmt.Errorf("didn't get expected packet")
 			}
 		}
 
