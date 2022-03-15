@@ -32,7 +32,7 @@ Tested in a KVM VM with 8 hyperthreading cores, and Intel 82599ES 10GE NIC, achi
 2. rewrite encap/decap code 
 3. add an example 
 
-#1 and #2 lead to significant performance improvement.
+`#1` and `#2` lead to significant performance improvement.
 
 
 ## Usage:
