@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/etherconn"
 )
 
@@ -210,6 +211,10 @@ func TestSharedEtherConn(t *testing.T) {
 				// etherconn.WithXDPPerClntRecvChanDepth(32768),
 				etherconn.WithXDPDebug(true),
 				etherconn.WithXDPUMEMChunkSize(4096),
+				etherconn.WithXDPEtherTypes([]uint16{
+					uint16(layers.EthernetTypeIPv4),
+					uint16(layers.EthernetTypeIPv6),
+				}),
 			}
 			if c.Aconn.defaultConn {
 				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))

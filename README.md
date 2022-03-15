@@ -48,3 +48,5 @@ see [doc](https://pkg.go.dev/github.com/hujun-open/etherconn)
 	* no IP packet fragementation/reassembly support
 	* using of etherconn requires root privileges
 
+## Built-in XDP Kernel Program
+etherconn includes a built-in XDP kernel program binary, its source is in [etherconnkern](https://github.com/hujun-open/etherconnkern)

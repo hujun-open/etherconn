@@ -8,9 +8,12 @@
 package etherconn
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/asavie/xdp"
+	"github.com/cilium/ebpf"
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 )
@@ -87,7 +91,11 @@ func GetIFQueueNum(ifname string) (int, error) {
 	if err != nil {
 		return 1, nil
 	}
-	return int(chans.CombinedCount), nil
+	result := int(chans.CombinedCount)
+	if result <= 0 {
+		result = 1
+	}
+	return result, nil
 }
 
 func newXdpsock(ctx context.Context, qid int,
@@ -215,6 +223,11 @@ func (s *xdpSock) recv(ctx context.Context) {
 			s.sock.Fill(s.sock.GetDescs(n, true))
 		}
 		numRx, err = s.mypollrecv(-1)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		if err != nil {
 			if errors.Is(err, syscall.ETIMEDOUT) {
 				select {
@@ -247,19 +260,20 @@ func (s *xdpSock) recv(ctx context.Context) {
 
 // XDPRelay is a PacketRelay implementation that uses AF_XDP Socket
 type XDPRelay struct {
-	sockList                                                                []*xdpSock
-	qIDList                                                                 []int
-	bpfProg                                                                 *xdp.Program
-	extBPFProgFileName, extBPFProgName, extBPFQMapName, extBPFSocketMapName string
-	toSendChan                                                              chan []byte
-	stopToSendChan                                                          chan struct{}
-	recvList                                                                *chanMap
-	wg                                                                      *sync.WaitGroup
-	cancelFunc                                                              context.CancelFunc
-	recvTimeout                                                             time.Duration
-	multicastList                                                           *chanMap
-	perClntRecvChanDepth                                                    uint
-	sendChanDepth                                                           uint
+	sockList                                                                                    []*xdpSock
+	qIDList                                                                                     []int
+	bpfProg                                                                                     *xdp.Program
+	bpfEtypeMap                                                                                 *ebpf.Map
+	extBPFProgFileName, extBPFProgName, extBPFQMapName, extBPFSocketMapName, extBPFEtypeMapName string
+	toSendChan                                                                                  chan []byte
+	stopToSendChan                                                                              chan struct{}
+	recvList                                                                                    *chanMap
+	wg                                                                                          *sync.WaitGroup
+	cancelFunc                                                                                  context.CancelFunc
+	recvTimeout                                                                                 time.Duration
+	multicastList                                                                               *chanMap
+	perClntRecvChanDepth                                                                        uint
+	sendChanDepth                                                                               uint
 	//maxEtherFrameSize could only be 2048 or 4096
 	maxEtherFrameSize uint
 	umemNumofTrunk    uint
@@ -272,6 +286,7 @@ type XDPRelay struct {
 	recvBytesChan     chan []byte
 	rxh, txh          XDPSocketPktHandler
 	sendingMode       XDPSendingMode
+	recvEtypes        []uint16
 }
 
 // XDPRelayOption could be used in NewXDPRelay to customize XDPRelay upon creation
@@ -286,6 +301,18 @@ func WithQueueID(qidlist []int) XDPRelayOption {
 			xr.qIDList = []int{}
 		}
 		xr.qIDList = append(xr.qIDList, qidlist...)
+	}
+}
+
+// WithXDPEtherTypes specifies a list of EtherType that the relay accepts,
+// if a rcvd packet doesn't have a expected EtherType, then it will be passed to kernel.
+// the EtherType is the inner most EtherType in case there is vlan tag.
+// the default accept EtherTypes is DefaultEtherTypes.
+// Note: this requires the builtin XDP kernel program.
+func WithXDPEtherTypes(ets []uint16) XDPRelayOption {
+	return func(xr *XDPRelay) {
+		xr.recvEtypes = make([]uint16, len(ets))
+		copy(xr.recvEtypes, ets)
 	}
 }
 
@@ -362,12 +389,13 @@ func WithXDPPerClntRecvChanDepth(depth uint) XDPRelayOption {
 }
 
 // WithXDPExtProg loads an external XDP kernel program iso using the built-in one
-func WithXDPExtProg(fname, prog, qmap, xskmap string) XDPRelayOption {
+func WithXDPExtProg(fname, prog, qmap, xskmap, etypemap string) XDPRelayOption {
 	return func(relay *XDPRelay) {
 		relay.extBPFProgFileName = fname
 		relay.extBPFProgName = prog
 		relay.extBPFQMapName = qmap
 		relay.extBPFSocketMapName = xskmap
+		relay.extBPFEtypeMapName = etypemap
 	}
 }
 
@@ -405,6 +433,7 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		stats:                newRelayPacketStats(),
 		wg:                   new(sync.WaitGroup),
 		sendingMode:          XDPSendingModeSingle,
+		recvEtypes:           DefaultEtherTypes,
 	}
 	var err error
 	if r.ifLink, err = netlink.LinkByName(ifname); err != nil {
@@ -433,15 +462,23 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 	r.toSendChan = make(chan []byte, r.sendChanDepth)
 	if r.extBPFProgFileName == "" {
 		//using built-in program
-		if r.bpfProg, err = xdp.NewProgram(len(r.qIDList)); err != nil {
+		if r.bpfProg, r.bpfEtypeMap, err = loadBuiltinEBPFProg(); err != nil {
 			return nil, fmt.Errorf("failed to create built-in xdp kernel program, %w", err)
 		}
 	} else {
 		//load external one
-		if r.bpfProg, err = xdp.LoadProgram(r.extBPFProgFileName, r.extBPFProgName, r.extBPFQMapName, r.extBPFSocketMapName); err != nil {
-			return nil, fmt.Errorf("failed load xdp kernel program %v, %w", r.extBPFProgFileName, err)
+		if r.bpfProg, r.bpfEtypeMap, err = loadExtEBPFProg(r.extBPFProgFileName,
+			r.extBPFProgName, r.extBPFQMapName,
+			r.extBPFSocketMapName, r.extBPFEtypeMapName); err != nil {
+			return nil, fmt.Errorf("failed to load xdp kernel program %v, %w", r.extBPFProgFileName, err)
 		}
-
+	}
+	//load EtherTypes into map
+	for _, et := range r.recvEtypes {
+		err = r.bpfEtypeMap.Put(et, uint16(1))
+		if err != nil {
+			return nil, fmt.Errorf("failed to add ethertype %d into ebpf map, %v", et, err)
+		}
 	}
 	if err = r.bpfProg.Attach(r.ifLink.Attrs().Index); err != nil {
 		return nil, fmt.Errorf("failed to attach new program, %w", err)
@@ -637,4 +674,51 @@ func SetIfVLANOffloading(ifname string, enable bool) error {
 	vlanoffloadingsetting["rx-vlan-hw-parse"] = enable
 	vlanoffloadingsetting["tx-vlan-hw-insert"] = enable
 	return etool.Change(ifname, vlanoffloadingsetting)
+}
+
+const builtinProgFileName = "xdpethfilter_kern.o"
+
+func loadEBPFProgViaReader(r io.ReaderAt, funcname, qidmapname, xskmapname, ethertypemap string) (*xdp.Program, *ebpf.Map, error) {
+	prog := new(xdp.Program)
+	spec, err := ebpf.LoadCollectionSpecFromReader(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	col, err := ebpf.NewCollection(spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ok bool
+	if prog.Program, ok = col.Programs[funcname]; !ok {
+		return nil, nil, fmt.Errorf("can't find a function named %v", funcname)
+	}
+	if prog.Queues, ok = col.Maps[qidmapname]; !ok {
+		return nil, nil, fmt.Errorf("can't find a queue map named %v", qidmapname)
+	}
+	if prog.Sockets, ok = col.Maps[xskmapname]; !ok {
+		return nil, nil, fmt.Errorf("can't find a socket map named %v", xskmapname)
+	}
+	var elist *ebpf.Map = nil
+	if elist, ok = col.Maps[ethertypemap]; !ok {
+		return nil, nil, fmt.Errorf("can't find a socket map named %v", xskmapname)
+	}
+
+	return prog, elist, nil
+}
+
+//go:embed xdpethfilter_kern.o
+var builtXDPProgBinary []byte
+
+func loadBuiltinEBPFProg() (*xdp.Program, *ebpf.Map, error) {
+	return loadEBPFProgViaReader(bytes.NewReader(builtXDPProgBinary),
+		"xdp_redirect_func", "qidconf_map", "xsks_map", "etype_list")
+}
+
+func loadExtEBPFProg(fname, funcname, qidmapname, xskmapname, ethertypemap string) (*xdp.Program, *ebpf.Map, error) {
+	f, err := os.Open(fname)
+	if err != nil {
+		return nil, nil, err
+	}
+	return loadEBPFProgViaReader(f,
+		funcname, qidmapname, xskmapname, ethertypemap)
 }

@@ -326,8 +326,8 @@ const (
 
 // L2EndpointKey is key identify a L2EndPoint,first 6 bytes are MAC address,
 // VLAN Ids in order (from outside to inner),
-// each VLAN id are two bytes in network endian, if VLAN id is NOVLANTAG,
-// then it means no such tag; last two bytes are inner most EtherType.
+// each VLAN id are two bytes in network endian, if VLAN id is NOVLANTAG,then it means no such tag;
+// last two bytes are inner most EtherType.
 type L2EndpointKey [L2EndpointKeySize]byte
 
 func (l2epkey L2EndpointKey) String() string {
