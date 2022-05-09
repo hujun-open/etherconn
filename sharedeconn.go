@@ -52,10 +52,16 @@ func (l4k L4RecvKey) String() string {
 
 }
 
+type SharedEconn interface {
+	Register(k L4RecvKey) (torecvch chan *RelayReceival)
+	WriteIPPktTo(p []byte, dstmac net.HardwareAddr) (int, error)
+	SetWriteDeadline(t time.Time) error
+}
+
 // SharedEtherConn could be mapped to multiple RUDPConn
 type SharedEtherConn struct {
 	econn                *EtherConn
-	recvList             *chanMap
+	recvList             *ChanMap
 	perClntRecvChanDepth uint
 	cancelFunc           context.CancelFunc
 	relay                PacketRelay
@@ -81,7 +87,7 @@ func NewSharedEtherConn(parentctx context.Context,
 	ecopts []EtherConnOption, options ...SharedEtherConnOption) *SharedEtherConn {
 	r := new(SharedEtherConn)
 	r.econn = NewEtherConn(mac, relay, ecopts...)
-	r.recvList = newchanMap()
+	r.recvList = NewChanMap()
 	r.perClntRecvChanDepth = DefaultPerClntRecvChanDepth
 	for _, opt := range options {
 		opt(r)
@@ -170,11 +176,14 @@ func (sec *SharedEtherConn) recv(ctx context.Context) {
 		}
 	}
 }
+func (sec *SharedEtherConn) SetWriteDeadline(t time.Time) error {
+	return sec.econn.SetWriteDeadline(t)
+}
 
 // SharingRUDPConn is the UDP connection could share same SharedEtherConn;
 type SharingRUDPConn struct {
 	udpconn          *RUDPConn
-	conn             *SharedEtherConn
+	conn             SharedEconn
 	readDeadline     time.Time
 	readDeadlineLock *sync.RWMutex
 	recvChan         chan *RelayReceival
@@ -189,7 +198,7 @@ type SharingRUDPConnOptions func(srudpc *SharingRUDPConn)
 // roptions is a list of RUDPConnOptions that use for customization,
 // supported are: WithResolveNextHopMacFunc;
 // note unlike RUDPConn, SharingRUDPConn doesn't support acceptting pkt is not destinated to own address
-func NewSharingRUDPConn(src string, c *SharedEtherConn, roptions []RUDPConnOption, options ...SharingRUDPConnOptions) (*SharingRUDPConn, error) {
+func NewSharingRUDPConn(src string, c SharedEconn, roptions []RUDPConnOption, options ...SharingRUDPConnOptions) (*SharingRUDPConn, error) {
 	r := new(SharingRUDPConn)
 	var err error
 	if r.udpconn, err = NewRUDPConn(src, nil, roptions...); err != nil {
@@ -267,7 +276,7 @@ func (sruc *SharingRUDPConn) SetReadDeadline(t time.Time) error {
 
 // SetWriteDeadline implements net.PacketConn interface
 func (sruc *SharingRUDPConn) SetWriteDeadline(t time.Time) error {
-	return sruc.conn.econn.SetWriteDeadline(t)
+	return sruc.conn.SetWriteDeadline(t)
 }
 
 // SetDeadline implements net.PacketConn interface

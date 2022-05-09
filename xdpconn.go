@@ -267,11 +267,11 @@ type XDPRelay struct {
 	extBPFProgFileName, extBPFProgName, extBPFQMapName, extBPFSocketMapName, extBPFEtypeMapName string
 	toSendChan                                                                                  chan []byte
 	stopToSendChan                                                                              chan struct{}
-	recvList                                                                                    *chanMap
+	recvList                                                                                    *ChanMap
 	wg                                                                                          *sync.WaitGroup
 	cancelFunc                                                                                  context.CancelFunc
 	recvTimeout                                                                                 time.Duration
-	multicastList                                                                               *chanMap
+	multicastList                                                                               *ChanMap
 	perClntRecvChanDepth                                                                        uint
 	sendChanDepth                                                                               uint
 	//maxEtherFrameSize could only be 2048 or 4096
@@ -428,8 +428,8 @@ func NewXDPRelay(parentctx context.Context, ifname string, options ...XDPRelayOp
 		sendChanDepth:        DefaultSendChanDepth,
 		maxEtherFrameSize:    DefaultXDPChunkSize,
 		umemNumofTrunk:       DefaultXDPUMEMNumOfTrunk,
-		recvList:             newchanMap(),
-		multicastList:        newchanMap(),
+		recvList:             NewChanMap(),
+		multicastList:        NewChanMap(),
 		stats:                newRelayPacketStats(),
 		wg:                   new(sync.WaitGroup),
 		sendingMode:          XDPSendingModeSingle,
@@ -597,8 +597,8 @@ type LogFunc func(fmt string, a ...interface{})
 
 //handleRcvPkt is the function handle the received pkt from underlying socket, it is shared code for both RawPacketRelay and XDPPacketRelay
 func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
-	logf LogFunc, recvList *chanMap, mirrorToDefault bool,
-	defaultRecvChan chan *RelayReceival, multicastList *chanMap,
+	logf LogFunc, recvList *ChanMap, mirrorToDefault bool,
+	defaultRecvChan chan *RelayReceival, multicastList *ChanMap,
 	ancData []interface{},
 ) {
 	atomic.AddUint64(stats.RxOffered, 1)

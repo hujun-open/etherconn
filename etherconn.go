@@ -436,19 +436,22 @@ func (rr *RelayReceival) GetL4Key() (r L4RecvKey) {
 // 	return fmt.Sprintf("%v:%v:%v", l4ep.IPProtocol, l4ep.IPAddr, l4ep.Port)
 // }
 
-type chanMap struct {
+// ChanMap is an GO routine safe map, key is interfce{}, val is a chan *RelayReceival;
+type ChanMap struct {
 	cmlist map[interface{}]chan *RelayReceival
 	lock   *sync.RWMutex
 }
 
-func newchanMap() *chanMap {
-	r := &chanMap{}
+// NewChanMap creates a new instance of ChanMap
+func NewChanMap() *ChanMap {
+	r := &ChanMap{}
 	r.cmlist = make(map[interface{}]chan *RelayReceival)
 	r.lock = &sync.RWMutex{}
 	return r
 }
 
-func (cm *chanMap) CloseAll() {
+// CloseAll close all channel in cm
+func (cm *ChanMap) CloseAll() {
 	cm.lock.Lock()
 	for _, c := range cm.cmlist {
 		close(c)
@@ -456,13 +459,15 @@ func (cm *chanMap) CloseAll() {
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) Set(k interface{}, v chan *RelayReceival) {
+// Set (k,v) into cm
+func (cm *ChanMap) Set(k interface{}, v chan *RelayReceival) {
 	cm.lock.Lock()
 	cm.cmlist[k] = v
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) SetList(ks []interface{}, v chan *RelayReceival) {
+// SetList set a (k,v) into cm for each k in ks
+func (cm *ChanMap) SetList(ks []interface{}, v chan *RelayReceival) {
 	cm.lock.Lock()
 	for _, k := range ks {
 		cm.cmlist[k] = v
@@ -470,18 +475,22 @@ func (cm *chanMap) SetList(ks []interface{}, v chan *RelayReceival) {
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) Get(k interface{}) chan *RelayReceival {
+// Get return the channel map to k
+func (cm *ChanMap) Get(k interface{}) chan *RelayReceival {
 	cm.lock.RLock()
 	defer cm.lock.RUnlock()
 	return cm.cmlist[k]
 }
 
-func (cm *chanMap) Del(k interface{}) {
+// Del delete entry with key as k
+func (cm *ChanMap) Del(k interface{}) {
 	cm.lock.Lock()
 	delete(cm.cmlist, k)
 	cm.lock.Unlock()
 }
-func (cm *chanMap) DelList(ks []interface{}) {
+
+// DelList deletes entries with key as k in ks
+func (cm *ChanMap) DelList(ks []interface{}) {
 	cm.lock.Lock()
 	for _, k := range ks {
 		delete(cm.cmlist, k)
@@ -489,7 +498,8 @@ func (cm *chanMap) DelList(ks []interface{}) {
 	cm.lock.Unlock()
 }
 
-func (cm *chanMap) GetList() []chan *RelayReceival {
+// GetList return all channels in cm
+func (cm *ChanMap) GetList() []chan *RelayReceival {
 	rlist := []chan *RelayReceival{}
 	cm.lock.RLock()
 	for _, c := range cm.cmlist {
@@ -529,11 +539,11 @@ type RawSocketRelay struct {
 	conn                 *afpacket.TPacket
 	toSendChan           chan []byte
 	stopToSendChan       chan struct{}
-	recvList             *chanMap
+	recvList             *ChanMap
 	wg                   *sync.WaitGroup
 	cancelFunc           context.CancelFunc
 	recvTimeout          time.Duration
-	multicastList        *chanMap
+	multicastList        *ChanMap
 	perClntRecvChanDepth uint
 	sendChanDepth        uint
 	maxEtherFrameSize    uint
@@ -666,8 +676,8 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	r.toSendChan = make(chan []byte, r.sendChanDepth)
 
-	r.recvList = newchanMap()
-	r.multicastList = newchanMap()
+	r.recvList = NewChanMap()
+	r.multicastList = NewChanMap()
 	r.stats = newRelayPacketStats()
 	r.wg = new(sync.WaitGroup)
 	r.bpfFilter = nil
