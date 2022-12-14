@@ -1,7 +1,8 @@
 // Copyright 2021 Hu Jun. All rights reserved.
 // This project is licensed under the terms of the MIT license.
 
-/*Package etherconn is a golang pkg that allow user to send/receive Ethernet
+/*
+Package etherconn is a golang pkg that allow user to send/receive Ethernet
 payload (like IP pkt) or UDP packet ,with custom Ethernet encapsulation like
 MAC address, VLAN tags, without creating corresponding interface in OS;
 
@@ -22,14 +23,13 @@ Usage:
 	                            <----> EtherConn <---> RUDPConn
 	                            <----> EtherConn <---> RUDPConn
 
-
 1. Create a PacketRelay instance and bound to an interface.PacketRelay is the
 "forward engine" that does actual packet sending/receiving for all EtherConn
 instances registered with it; PacketRelay send/receive Ethernet packet;
 PacketRelay is a GO interface, currently there are two implementations:
 
-	- RawSocketRelay: uses AF_PACKET socket
-	- XDPRelay: uses AF_XDP socket
+  - RawSocketRelay: uses AF_PACKET socket
+  - XDPRelay: uses AF_XDP socket
 
 2. Create one EtherConn for each source MAC+VLAN(s)+EtherType(s) combination needed,
 and register with the PacketRelay instance. EtherConn send/receive Ethernet
@@ -44,11 +44,12 @@ will forward all received UDP pkts to RUDPConn even when its IP/UDP port is
 different from RUDPConn's endpoint, and RUDPConn could either only accept correct
 pkt or accept any UDP packet;
 
-
 Egress direction:
+
 	UDP_payload -> RUDPConn(add UDP&IP header) -> EtherConn(add Ethernet header) -> PacketRelay
 
 Ingress direction:
+
 	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- EtherPayload(e.g IP_pkt) --> EtherConn
 	Ethernet_pkt -> (BPFilter) PacketRelay (parse pkt) --- UDP_payload --> RUDPConn (option to accept any UDP pkt)
 
@@ -58,12 +59,12 @@ Note: PacketRelay parse pkt for Ethernet payload based on following rules:
 * else, dstMAC + VLANs +  EtherType in last VLAN tag is used
 
 Limitations:
-	 * linux only
-	 * since etherconn bypassed linux IP stack, it is user's job to provide functions like:
-	    * routing next-hop lookup
-	    * IP -> MAC address resolution
-	* no IP packet fragementation/reassembly support
-	* using of etherconn requires root privileges
+  - linux only
+  - since etherconn bypassed linux IP stack, it is user's job to provide functions like:
+  - routing next-hop lookup
+  - IP -> MAC address resolution
+  - no IP packet fragementation/reassembly support
+  - using of etherconn requires root privileges
 
 Example:
 
@@ -102,9 +103,6 @@ Example:
 	if err != nil {
 		log.Fatalf("failed to finish DORA,%v", err)
 	}
-
-
-
 */
 package etherconn
 
@@ -165,7 +163,7 @@ type VLAN struct {
 // VLANs is a slice of VLAN
 type VLANs []*VLAN
 
-//String return a string representation
+// String return a string representation
 func (vlans VLANs) String() string {
 	s := ""
 	for _, v := range vlans {
@@ -174,7 +172,7 @@ func (vlans VLANs) String() string {
 	return s
 }
 
-//IDs return a VLAN IDs as a slice of uint16
+// IDs return a VLAN IDs as a slice of uint16
 func (vlans VLANs) IDs() []uint16 {
 	r := []uint16{}
 	for _, v := range vlans {
@@ -183,7 +181,7 @@ func (vlans VLANs) IDs() []uint16 {
 	return r
 }
 
-//SetIDs set VLAN ID with the specified uint16 slice
+// SetIDs set VLAN ID with the specified uint16 slice
 func (vlans VLANs) SetIDs(ids []uint16) error {
 	if len(vlans) != len(ids) {
 		return fmt.Errorf("the number of specified ID is different from what is needed")
@@ -194,7 +192,7 @@ func (vlans VLANs) SetIDs(ids []uint16) error {
 	return nil
 }
 
-//Clone return a deep copy
+// Clone return a deep copy
 func (vlans VLANs) Clone() VLANs {
 	r := VLANs{}
 	for _, v := range vlans {
@@ -207,7 +205,7 @@ func (vlans VLANs) Clone() VLANs {
 	return r
 }
 
-//Copy copy value of lvans2 to vlans
+// Copy copy value of lvans2 to vlans
 func (vlans *VLANs) Copy(vlans2 VLANs) {
 	*vlans = VLANs{}
 	for _, v := range vlans2 {
@@ -219,7 +217,7 @@ func (vlans *VLANs) Copy(vlans2 VLANs) {
 
 }
 
-//Equal returns true if vlans == vlans2
+// Equal returns true if vlans == vlans2
 func (vlans VLANs) Equal(vlans2 VLANs) bool {
 	if len(vlans) != len(vlans2) {
 		return false
@@ -268,22 +266,24 @@ func NewL2EndpointFromMACVLANEtype(mac net.HardwareAddr, vlans VLANs, etype uint
 	return r
 }
 
-// p is a ethernet packet in byte slice,
-func getL2EPandReceival(p []byte, auxdata []interface{}) (*L2Endpoint, *RelayReceival) {
-	l2ep := newL2Endpoint()
+// getReceivalFromRcvPkt parse received ethernet pkt, p is a ethernet packet in byte slice,
+func getReceivalFromRcvPkt(p []byte, auxdata []interface{}) *RelayReceival {
+	// l2ep := newL2Endpoint()
 	rcv := newRelayReceival()
+	rcv.LocalEndpoint = newL2Endpoint()
+	rcv.RemoteEndpoint = newL2Endpoint()
 	rcv.EtherBytes = p
-	copy(l2ep.HwAddr, p[:6])
-	rcv.RemoteMAC = p[6:12]
+	copy(rcv.LocalEndpoint.HwAddr, p[:6])    //dst mac
+	copy(rcv.RemoteEndpoint.HwAddr, p[6:12]) //src mac
 	index := 12
 	var etype, vlan2bytes uint16
 	for {
 		etype = binary.BigEndian.Uint16(p[index : index+2])
 		if etype == 0x8100 || etype == 0x88a8 {
 			vlan2bytes = binary.BigEndian.Uint16(p[index+2 : index+4])
-			l2ep.VLANs = append(l2ep.VLANs, vlan2bytes&0x0fff)
+			rcv.LocalEndpoint.VLANs = append(rcv.LocalEndpoint.VLANs, vlan2bytes&0x0fff)
 		} else {
-			l2ep.Etype = etype
+			rcv.LocalEndpoint.Etype = etype
 			break
 		}
 		index += 4
@@ -291,12 +291,12 @@ func getL2EPandReceival(p []byte, auxdata []interface{}) (*L2Endpoint, *RelayRec
 	rcv.EtherPayloadBytes = p[index+2:]
 	for _, adata := range auxdata {
 		if v, ok := adata.(afpacket.AncillaryVLAN); ok {
-			l2ep.VLANs = append([]uint16{uint16(v.VLAN)}, l2ep.VLANs...)
+			rcv.LocalEndpoint.VLANs = append([]uint16{uint16(v.VLAN)}, rcv.LocalEndpoint.VLANs...)
 		}
 	}
 	var l4index int
 
-	switch l2ep.Etype {
+	switch rcv.LocalEndpoint.Etype {
 	case 0x0800: //ipv4
 		rcv.RemoteIP = rcv.EtherPayloadBytes[12:16]
 		rcv.LocalIP = rcv.EtherPayloadBytes[16:20]
@@ -314,7 +314,9 @@ func getL2EPandReceival(p []byte, auxdata []interface{}) (*L2Endpoint, *RelayRec
 		rcv.LocalPort = binary.BigEndian.Uint16(rcv.EtherPayloadBytes[l4index+2 : l4index+4])
 		rcv.TransportPayloadBytes = rcv.EtherPayloadBytes[l4index+8:]
 	}
-	return l2ep, rcv
+	rcv.RemoteEndpoint.Etype = rcv.LocalEndpoint.Etype
+	rcv.RemoteEndpoint.VLANs = rcv.LocalEndpoint.VLANs
+	return rcv
 }
 
 const (
@@ -386,8 +388,8 @@ func (l2e *L2Endpoint) GetVLANsWithDefaultEtype() (r VLANs) {
 
 // RelayReceival is the what PacketRelay received and parsed
 type RelayReceival struct {
-	//RemoteMAC is the remote MAC address
-	RemoteMAC net.HardwareAddr
+	//LocalEndpoint/RemoteEndpoint is the local/remote L2Endpoint
+	LocalEndpoint, RemoteEndpoint *L2Endpoint
 	// EtherBytes is the Ethernet frame bytes
 	EtherBytes []byte
 	// EtherPayloadBytes is the Ethernet payload bytes within the EtherBytes,
@@ -711,7 +713,7 @@ func (rsr *RawSocketRelay) log(format string, a ...interface{}) {
 	}
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
-	rsr.logger.Print(fmt.Sprintf("%v:%v:%v:%v", filepath.Base(fname), linenum, rsr.ifName, msg))
+	rsr.logger.Printf("%v:%v:%v:%v", filepath.Base(fname), linenum, rsr.ifName, msg)
 }
 
 // Register implements PacketRelay interface;
@@ -988,7 +990,12 @@ func (ec *EtherConn) SetDeadline(t time.Time) error {
 	return nil
 }
 
-//ResolveNexhopMACWithBrodcast is the default resolve function that always return broadcast mac
+// GetEtherTypes returns list of EtherType ec recevies
+func (ec *EtherConn) GetEtherTypes() []uint16 {
+	return ec.recvEtypes
+}
+
+// ResolveNexhopMACWithBrodcast is the default resolve function that always return broadcast mac
 func ResolveNexhopMACWithBrodcast(ip net.IP) net.HardwareAddr {
 	return BroadCastMAC
 }
@@ -1077,9 +1084,9 @@ func (ec *EtherConn) writeIPPktToFrom(p []byte, srcmac, dstmac net.HardwareAddr,
 	return ec.writePktToFrom(p, uint16(payloadtype), srcmac, dstmac, vlans)
 }
 
-//writePktToFrom support both RawPacketRelay and XDPRelay,
-//in case xdp,if xdpsockid<0, then use EtherConn's own socket,
-//otherwise use the specified socket
+// writePktToFrom support both RawPacketRelay and XDPRelay,
+// in case xdp,if xdpsockid<0, then use EtherConn's own socket,
+// otherwise use the specified socket
 func (ec *EtherConn) writePktToFrom(p []byte, etype uint16,
 	srcmac, dstmac net.HardwareAddr,
 	vlans VLANs) (int, error) {
@@ -1157,24 +1164,24 @@ func (ec *EtherConn) getReceival() (*RelayReceival, error) {
 // ReadPktFrom copies the received Ethernet payload to p;
 // it calls ReadPkt to get the payload,
 // it return number bytes of IP packet, remote MAC address
-func (ec *EtherConn) ReadPktFrom(p []byte) (int, net.HardwareAddr, error) {
-	buf, srcmac, err := ec.ReadPkt()
+func (ec *EtherConn) ReadPktFrom(p []byte) (int, *L2Endpoint, error) {
+	buf, rep, err := ec.ReadPkt()
 	if err != nil {
 		return 0, nil, err
 	}
 	copy(p, buf)
-	return len(buf), srcmac, nil
+	return len(buf), rep, nil
 }
 
-// ReadPkt return received Ethernet payload bytes with an already allocated byte slice;
+// ReadPkt return received Ethernet payload bytes with an already allocated byte slice, along with remote L2Endpoint
 // ReadPkt only return payload that matches one of underlying PacketRelay's configured EtherTypes
-func (ec *EtherConn) ReadPkt() ([]byte, net.HardwareAddr, error) {
+func (ec *EtherConn) ReadPkt() ([]byte, *L2Endpoint, error) {
 	receival, err := ec.getReceival()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return receival.EtherPayloadBytes, receival.RemoteMAC, nil
+	return receival.EtherPayloadBytes, receival.RemoteEndpoint, nil
 }
 
 // Close implements net.PacketConn interface, deregister itself from PacketRelay

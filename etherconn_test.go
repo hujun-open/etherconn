@@ -132,6 +132,30 @@ const (
 	macTestWrong
 )
 
+// checkEP check if rep matches with ec
+func checkEP(rep *etherconn.L2Endpoint, ec *etherconn.EtherConn) error {
+	ecaddr := ec.LocalAddr()
+	if rep.HwAddr.String() != ecaddr.HwAddr.String() {
+		return fmt.Errorf("ep mac addr %v is different from econn's mac %v",
+			rep.HwAddr.String(), ecaddr.HwAddr.String())
+	}
+	if fmt.Sprintf("%X", rep.VLANs) != fmt.Sprintf("%X", ecaddr.VLANs) {
+		return fmt.Errorf("ep vlan %v is different from econn's vlan %v",
+			rep.VLANs, ecaddr.VLANs)
+	}
+	found := false
+	for _, et := range ec.GetEtherTypes() {
+		if et == rep.Etype {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("ep ethertype %d is not in econn's list %v", rep.Etype, ec.GetEtherTypes())
+	}
+	return nil
+}
+
 func TestEtherConn(t *testing.T) {
 	testCaseList := []testEtherConnSingleCase{
 		//0 good case, no Q
@@ -557,7 +581,7 @@ func TestEtherConn(t *testing.T) {
 			}
 			good := false
 			for i := 0; i < 6; i++ {
-				n, _, err := econnB.ReadPktFrom(rcvdbuf)
+				n, rep, err := econnB.ReadPktFrom(rcvdbuf)
 				if err != nil {
 					return err
 				}
@@ -566,6 +590,9 @@ func TestEtherConn(t *testing.T) {
 						return fmt.Errorf("recvied bytes is different from sent for pkt %d, sent %v, recv %v", i, p, rcvdbuf[:n])
 					}
 				} else {
+					if cerr := checkEP(rep, econnA); cerr != nil {
+						return cerr
+					}
 					fmt.Printf("recved a good  pkt\n")
 					good = true
 					break
@@ -730,8 +757,8 @@ func TestRUDPConn(t *testing.T) {
 	}
 }
 
-//v is the orignal value, vs is the orignal string
-//newIDs is the value for SetIDs, newv is the new VLANs after setIDs
+// v is the orignal value, vs is the orignal string
+// newIDs is the value for SetIDs, newv is the new VLANs after setIDs
 type testVLANsCase struct {
 	v          etherconn.VLANs
 	vs         string

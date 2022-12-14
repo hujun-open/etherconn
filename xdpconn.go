@@ -1,10 +1,10 @@
 // XDPRelay uses Linux AF_XDP socket as the underlying forwarding mechinism, so it achives higher performance than RawSocketRelay in multi-core setup,
 // XDPRelay usage notes:
-//	1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
-//	2. AF_XDP is still relative new, see XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
+//  1. for virtio interface, the number of queues provisioned needs to be 2x of number CPU cores VM has, binding will fail otherwise.
+//  2. AF_XDP is still relative new, see XDP kernel&driver support status: https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp
 //  3. For best performance:
-//      a) use NIC multiple queues and multiple routine(with runtime.LockOSThread()) to drive the traffic
-//      b) the number of routines >= number of NIC queues
+//     a) use NIC multiple queues and multiple routine(with runtime.LockOSThread()) to drive the traffic
+//     b) the number of routines >= number of NIC queues
 package etherconn
 
 import (
@@ -126,7 +126,7 @@ func (s *xdpSock) log(format string, a ...interface{}) {
 	}
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
-	s.relay.logger.Print(fmt.Sprintf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg))
+	s.relay.logger.Printf("%v:%v:Q%d:%v", filepath.Base(fname), linenum, s.qid, msg)
 }
 
 func (s *xdpSock) send(ctx context.Context, mode XDPSendingMode) {
@@ -511,7 +511,7 @@ func (xr *XDPRelay) log(format string, a ...interface{}) {
 	}
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
-	xr.logger.Print(fmt.Sprintf("%v:%v:%v:%v", filepath.Base(fname), linenum, xr.ifName, msg))
+	xr.logger.Printf("%v:%v:%v:%v", filepath.Base(fname), linenum, xr.ifName, msg)
 }
 func (xr *XDPRelay) cleanup() {
 	for _, sock := range xr.sockList {
@@ -553,7 +553,7 @@ func (xr *XDPRelay) IfName() string {
 	return xr.ifName
 }
 
-//NumSocket returns number of XDP socket
+// NumSocket returns number of XDP socket
 func (xr *XDPRelay) NumSocket() int {
 	return len(xr.sockList)
 }
@@ -595,7 +595,7 @@ func (xr *XDPRelay) GetStats() *RelayPacketStats {
 
 type LogFunc func(fmt string, a ...interface{})
 
-//handleRcvPkt is the function handle the received pkt from underlying socket, it is shared code for both RawPacketRelay and XDPPacketRelay
+// handleRcvPkt is the function handle the received pkt from underlying socket, it is shared code for both RawPacketRelay and XDPPacketRelay
 func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 	logf LogFunc, recvList *ChanMap, mirrorToDefault bool,
 	defaultRecvChan chan *RelayReceival, multicastList *ChanMap,
@@ -607,14 +607,13 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 		return
 	}
 	// gpacket := gopacket.NewPacket(pktData, layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
-	var l2ep *L2Endpoint
-	var recvial *RelayReceival
+
 	// var rmac net.HardwareAddr
-	l2ep, recvial = getL2EPandReceival(pktData, ancData)
+	recvial := getReceivalFromRcvPkt(pktData, ancData)
 	if logf != nil {
-		logf("got pkt with l2epkey %v", l2ep.GetKey().String())
+		logf("got pkt with l2epkey %v", recvial.LocalEndpoint.GetKey().String())
 	}
-	if rcvchan := recvList.Get(l2ep.GetKey()); rcvchan != nil {
+	if rcvchan := recvList.Get(recvial.LocalEndpoint.GetKey()); rcvchan != nil {
 		// found match etherconn
 		//NOTE: create go routine here since sendToChanWithCounter will parse the pkt, need some CPU
 		//NOTE2: update @ 10/15/2021, remove creating go routine, since it will create out-of-order issue
@@ -624,7 +623,7 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 		}
 	} else {
 		//TODO: could use an optimization here, where parsing only done once iso calling sendToChanWithCounter multiple times
-		if l2ep.HwAddr[0]&0x1 == 1 { //multicast traffic
+		if recvial.LocalEndpoint.HwAddr[0]&0x1 == 1 { //multicast traffic
 			mList := multicastList.GetList()
 			zeroMList := false
 			if len(mList) > 0 {
@@ -655,7 +654,7 @@ func handleRcvPkt(pktData []byte, stats *RelayPacketStats,
 				sendToChanWithCounter(recvial, defaultRecvChan, stats.RxDefault, stats.RxBufferFull)
 			} else {
 				if logf != nil {
-					logf(fmt.Sprintf("can't find match l2ep %v", l2ep.GetKey().String()))
+					logf(fmt.Sprintf("can't find match l2ep %v", recvial.LocalEndpoint.GetKey().String()))
 				}
 				atomic.AddUint64(stats.RxMiss, 1)
 			}
