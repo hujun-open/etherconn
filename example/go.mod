@@ -10,7 +10,7 @@ require (
 	github.com/hujun-open/etherconn v0.3.0
 	github.com/hujun-open/myaddr v0.0.0-20200628224706-46a60dd3e36b
 	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/sys v0.0.0-20210525143221-35b2ab0089ea
+	golang.org/x/sys v0.1.0
 )
 
 require (
