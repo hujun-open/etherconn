@@ -10,7 +10,7 @@ require (
 	github.com/hujun-open/etherconn v0.3.0
 	github.com/hujun-open/myaddr v0.0.0-20200628224706-46a60dd3e36b
 	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/sys v0.0.0-20210525143221-35b2ab0089ea
+	golang.org/x/sys v0.5.0
 )
 
 require (
@@ -18,5 +18,5 @@ require (
 	github.com/cilium/ebpf v0.4.0 // indirect
 	github.com/safchain/ethtool v0.0.0-20201023143004-874930cb3ce0 // indirect
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df // indirect
-	golang.org/x/net v0.0.0-20210525063256-abc453219eb5 // indirect
+	golang.org/x/net v0.7.0 // indirect
 )
