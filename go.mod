@@ -13,7 +13,7 @@ require (
 	github.com/safchain/ethtool v0.0.0-20201023143004-874930cb3ce0
 	github.com/vishvananda/netlink v1.1.0
 	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
-	golang.org/x/sys v0.0.0-20210525143221-35b2ab0089ea
+	golang.org/x/sys v0.1.0
 )
 
 require (
