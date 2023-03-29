@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	"runtime"
 	"sync"
@@ -14,27 +14,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/etherconn"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
-
-func setPromisc(ifname string) error {
-	intf, err := net.InterfaceByName(ifname)
-	if err != nil {
-		return fmt.Errorf("couldn't query interface %s: %s", ifname, err)
-	}
-	htons := func(data uint16) uint16 { return data<<8 | data>>8 }
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
-	if err != nil {
-		return fmt.Errorf("couldn't open packet socket: %s", err)
-	}
-	mreq := unix.PacketMreq{
-		Ifindex: int32(intf.Index),
-		Type:    unix.PACKET_MR_PROMISC,
-	}
-
-	opt := unix.PACKET_ADD_MEMBERSHIP
-	return unix.SetsockoptPacketMreq(fd, unix.SOL_PACKET, opt, &mreq)
-}
 
 const defaultMaxXDPFrameSize = 4096
 const defaultNumXDPUMEMChunk = 16384
@@ -45,7 +25,7 @@ type ECInterface struct {
 }
 
 func NewECInterface(ctx context.Context, ifname string,
-	maxFrameSize uint, numchunk uint, numeng uint, relayRcvDepth, econnRcvDepth uint, doulbeQ bool, driver Driver, debug bool, txbatch bool) (*ECInterface, error) {
+	maxFrameSize uint, numchunk uint, numeng uint, relayRcvDepth, econnRcvDepth uint, doulbeQ bool, driver etherconn.RelayType, debug bool, txbatch bool) (*ECInterface, error) {
 	var err error
 	var intf netlink.Link
 	if intf, err = netlink.LinkByName(ifname); err != nil {
@@ -55,10 +35,6 @@ func NewECInterface(ctx context.Context, ifname string,
 		return nil, fmt.Errorf("interface %v is not oper up", ifname)
 	}
 	log.Printf("%v type is %v", ifname, intf.Type())
-	err = setPromisc(ifname)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set %v to Promisc mode,%w", ifname, err)
-	}
 	var numQ int
 	numQ, err = etherconn.GetIFQueueNum(ifname)
 	if err != nil {
@@ -69,7 +45,19 @@ func NewECInterface(ctx context.Context, ifname string,
 	switch driver {
 	default:
 		return nil, fmt.Errorf("unsupported driver for etherconn %v", driver)
-	case DriverEtherConn:
+	case etherconn.RelayTypePCAP:
+		r.relay, err = etherconn.NewRawSocketRelayPcap(ctx, ifname,
+			etherconn.WithDebug(debug),
+			etherconn.WithMaxEtherFrameSize(maxFrameSize),
+			etherconn.WithPerClntChanRecvDepth(numchunk),
+			etherconn.WithSendChanDepth(relayRcvDepth),
+			etherconn.WithMultiEngine(numeng),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create %v relay for interface %v, %w", etherconn.RelayTypePCAP, ifname, err)
+		}
+		return r, nil
+	case etherconn.RelayTypeAFP:
 		r.relay, err = etherconn.NewRawSocketRelay(ctx, ifname,
 			etherconn.WithDebug(debug),
 			etherconn.WithMaxEtherFrameSize(maxFrameSize),
@@ -78,11 +66,10 @@ func NewECInterface(ctx context.Context, ifname string,
 			etherconn.WithMultiEngine(numeng),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create raw pkt relay for interface %v, %w", ifname, err)
+			return nil, fmt.Errorf("failed to create %v relay for interface %v, %w", etherconn.RelayTypeAFP, ifname, err)
 		}
 		return r, nil
-	case DriverEtherConnXDP:
-
+	case etherconn.RelayTypeXDP:
 		if doulbeQ {
 			numQ *= 2
 		}

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/etherconn"
 )
 
@@ -24,22 +23,17 @@ type testUDPEndpoint struct {
 	Port int
 }
 
-const (
-	afRelay int = iota
-	xdpRelay
-)
-
 type testSharedEtherConnSingleCase struct {
 	Aconn, Bconn       testEtherConnEndpoint
 	AUDPList, BUDPList []testUDPEndpoint
-	relayType          int
+	relayType          etherconn.RelayType
 	shouldFail         bool
 }
 
 // TestSharedEtherConn tests both RawSocketRelay and XDPRelay
 func TestSharedEtherConn(t *testing.T) {
 	testCaseList := []testSharedEtherConnSingleCase{
-		//good case, no Q
+		//case 0, good case, no Q
 		{
 			Aconn: testEtherConnEndpoint{
 				mac:         net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -73,7 +67,7 @@ func TestSharedEtherConn(t *testing.T) {
 			},
 		},
 
-		//good case, vlan
+		//case1, good case, vlan
 		{
 			Aconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -117,7 +111,7 @@ func TestSharedEtherConn(t *testing.T) {
 			},
 		},
 
-		//good case, QinQ
+		//case2 good case, QinQ
 		{
 			Aconn: testEtherConnEndpoint{
 				mac: net.HardwareAddr{0x14, 0x11, 0x11, 0x11, 0x11, 0x1},
@@ -175,67 +169,20 @@ func TestSharedEtherConn(t *testing.T) {
 
 		rootctx, cancelf := context.WithDeadline(context.Background(), time.Now().Add(lifetime))
 		defer cancelf()
-		_, _, err := testCreateVETHLink(testifA, testifB)
+		err := testCreateVETHLink(testifA, testifB)
 		if err != nil {
 			return err
 		}
 		//create pkt relay
 		var peerA, peerB etherconn.PacketRelay
-		switch c.relayType {
-		case afRelay:
-			mods := []etherconn.RelayOption{
-				etherconn.WithDebug(true),
-			}
-			if c.Aconn.defaultConn {
-				mods = append(mods, etherconn.WithDefaultReceival(c.Aconn.defaultConnMirror))
-			}
-			peerA, err = etherconn.NewRawSocketRelay(rootctx, testifA, mods...)
-			if err != nil {
-				return err
-			}
-			mods = []etherconn.RelayOption{
-				etherconn.WithDebug(true),
-			}
-			if c.Bconn.defaultConn {
-				mods = append(mods, etherconn.WithDefaultReceival(c.Bconn.defaultConnMirror))
-			}
-			peerB, err = etherconn.NewRawSocketRelay(rootctx, testifB, mods...)
-			if err != nil {
-				return err
-			}
-		case xdpRelay:
-
-			mods := []etherconn.XDPRelayOption{
-				etherconn.WithQueueID([]int{0}),
-				etherconn.WithXDPUMEMNumOfTrunk(32768),
-				// etherconn.WithXDPPerClntRecvChanDepth(32768),
-				etherconn.WithXDPDebug(true),
-				etherconn.WithXDPUMEMChunkSize(4096),
-				etherconn.WithXDPEtherTypes([]uint16{
-					uint16(layers.EthernetTypeIPv4),
-					uint16(layers.EthernetTypeIPv6),
-				}),
-			}
-			if c.Aconn.defaultConn {
-				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Aconn.defaultConnMirror))
-			}
-			peerA, err = etherconn.NewXDPRelay(rootctx, testifA, mods...)
-			if err != nil {
-				return err
-			}
-			mods = []etherconn.XDPRelayOption{
-				etherconn.WithXDPDebug(true),
-				etherconn.WithQueueID([]int{0}),
-			}
-			if c.Bconn.defaultConn {
-				mods = append(mods, etherconn.WithXDPDefaultReceival(c.Bconn.defaultConnMirror))
-			}
-			peerB, err = etherconn.NewXDPRelay(rootctx, testifB, mods...)
-			if err != nil {
-				return err
-			}
+		peerA, err = getPKTRelay(rootctx, c.relayType, testifA, c.Aconn.defaultConn, c.Aconn.defaultConnMirror)
+		if err != nil {
+			return err
 		}
-		// defer fmt.Printf("A stats: %+v\n B stats: %+v\n", peerA.GetStats(), peerB.GetStats())
+		peerB, err = getPKTRelay(rootctx, c.relayType, testifB, c.Bconn.defaultConn, c.Bconn.defaultConnMirror)
+		if err != nil {
+			return err
+		}
 		defer peerA.Stop()
 		defer peerB.Stop()
 
@@ -358,15 +305,15 @@ func TestSharedEtherConn(t *testing.T) {
 
 	}
 	for i, c := range testCaseList {
-		// if i != 2 {
-		// 	continue
-		// }
-		t.Logf("====> run case %d with RawSocketRelay", i)
-		c.relayType = afRelay
-		runTestFunc(c, i)
-		t.Logf("====> run case %d with XDPRelay", i)
-		c.relayType = xdpRelay
-		runTestFunc(c, i)
+		rtlist := []etherconn.RelayType{etherconn.RelayTypeAFP, etherconn.RelayTypePCAP}
+		if runtime.GOOS == "windows" {
+			rtlist = []etherconn.RelayType{etherconn.RelayTypePCAP}
+		}
+		for _, relayType := range rtlist {
+			t.Logf("====> run case %d with %v", i, relayType)
+			c.relayType = relayType
+			runTestFunc(c, i)
+		}
 	}
 
 }

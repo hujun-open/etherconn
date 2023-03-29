@@ -9,9 +9,11 @@ package etherconn_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,37 +22,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/myaddr"
-	"github.com/vishvananda/netlink"
 )
-
-const (
-	testifA = "A"
-	testifB = "B"
-)
-
-func testCreateVETHLink(a, b string) (netlink.Link, netlink.Link, error) {
-	linka := new(netlink.Veth)
-	linka.Name = a
-	linka.PeerName = b
-	netlink.LinkDel(linka)
-	err := netlink.LinkAdd(linka)
-	if err != nil {
-		return nil, nil, err
-	}
-	linkb, err := netlink.LinkByName(b)
-	if err != nil {
-		return nil, nil, err
-	}
-	err = netlink.LinkSetUp(linka)
-	if err != nil {
-		return nil, nil, err
-	}
-	err = netlink.LinkSetUp(linkb)
-	if err != nil {
-		return nil, nil, err
-	}
-	return linka, linkb, nil
-}
 
 type testEtherConnEndpoint struct {
 	mac               net.HardwareAddr
@@ -472,15 +444,27 @@ func TestEtherConn(t *testing.T) {
 		},
 	}
 
-	testFunc := func(c testEtherConnSingleCase) error {
-		_, _, err := testCreateVETHLink(testifA, testifB)
+	testFunc := func(c testEtherConnSingleCase, relayType etherconn.RelayType) error {
+		err := testCreateVETHLink(testifA, testifB)
 		if err != nil {
 			return err
 		}
-		filterstr := "udp or (vlan and udp)"
+		// filterstr := "udp or (vlan and udp)"
+
+		filterstr := ""
+		switch relayType {
+		case etherconn.RelayTypeAFP:
+			filterstr = "udp or (vlan and udp)"
+		case etherconn.RelayTypePCAP:
+			if runtime.GOOS == "linux" {
+				filterstr = "(udp) or (vlan and vlan and udp) or (vlan and udp)"
+			}
+		}
+
 		if c.A.filter != "" {
 			filterstr = c.A.filter
 		}
+
 		mods := []etherconn.RelayOption{
 			etherconn.WithDebug(true),
 			etherconn.WithBPFFilter(filterstr),
@@ -488,12 +472,28 @@ func TestEtherConn(t *testing.T) {
 		if c.A.defaultConn {
 			mods = append(mods, etherconn.WithDefaultReceival(c.A.defaultConnMirror))
 		}
-		peerA, err := etherconn.NewRawSocketRelay(context.Background(), testifA, mods...)
+		var peerA, peerB *etherconn.RawSocketRelay
+		peerA, err = getRawRelay(context.Background(), relayType, testifA, mods...)
+		// switch relayType {
+		// case etherconn.RawRelayTypePCAP:
+		// 	peerA, err = etherconn.NewRawSocketRelayPcap(context.Background(), testifA, mods...)
+		// case etherconn.RawRelayTypeAFP:
+		// 	peerA, err = etherconn.NewRawSocketRelay(context.Background(), testifA, mods...)
+		// }
+
 		if err != nil {
 			return err
 		}
 		defer peerA.Stop()
-		filterstr = "udp or (vlan and udp)"
+		filterstr = ""
+		switch relayType {
+		case etherconn.RelayTypeAFP:
+			filterstr = "udp or (vlan and udp)"
+		case etherconn.RelayTypePCAP:
+			if runtime.GOOS == "linux" {
+				filterstr = "(udp) or (vlan and vlan and udp) or (vlan and udp)"
+			}
+		}
 		if c.B.filter != "" {
 			filterstr = c.B.filter
 		}
@@ -504,7 +504,13 @@ func TestEtherConn(t *testing.T) {
 		if c.B.defaultConn {
 			mods = append(mods, etherconn.WithDefaultReceival(c.B.defaultConnMirror))
 		}
-		peerB, err := etherconn.NewRawSocketRelay(context.Background(), testifB, mods...)
+		peerB, err = getRawRelay(context.Background(), relayType, testifB, mods...)
+		// switch relayType {
+		// case etherconn.RawRelayTypePCAP:
+		// 	peerB, err = etherconn.NewRawSocketRelayPcap(context.Background(), testifB, mods...)
+		// case etherconn.RawRelayTypeAFP:
+		// 	peerB, err = etherconn.NewRawSocketRelay(context.Background(), testifB, mods...)
+		// }
 		if err != nil {
 			return err
 		}
@@ -557,7 +563,7 @@ func TestEtherConn(t *testing.T) {
 		maxSize := 1000
 		for i := 0; i < 10; i++ {
 			fmt.Printf("send pkt %d\n", i)
-			pktSize := maxSize - rand.Intn(maxSize-63)
+			pktSize := maxSize - mathrand.Intn(maxSize-63)
 			p := testGenDummyIPbytes(pktSize, i%2 == 0)
 			var dst net.HardwareAddr
 			switch c.A.dstMACFlag {
@@ -575,7 +581,7 @@ func TestEtherConn(t *testing.T) {
 			}
 			rcvdbuf := make([]byte, maxSize+100)
 			//set read timeout
-			err = econnB.SetReadDeadline(time.Now().Add(3 * time.Second))
+			err = econnB.SetReadDeadline(time.Now().Add(10 * time.Second))
 			if err != nil {
 				return err
 			}
@@ -606,20 +612,28 @@ func TestEtherConn(t *testing.T) {
 		return nil
 	}
 	for i, c := range testCaseList {
-		// if i != 10 {
+		// if i != 2 {
 		// 	continue
 		// }
-		err := testFunc(c)
-		if err != nil {
-			if c.shouldFail {
-				fmt.Printf("case %d failed as expected,%v\n", i, err)
+		rtlist := []etherconn.RelayType{etherconn.RelayTypeAFP, etherconn.RelayTypePCAP}
+		if runtime.GOOS == "windows" {
+			rtlist = []etherconn.RelayType{etherconn.RelayTypePCAP}
+		}
+		for _, rtype := range rtlist {
+			t.Logf("TestEtherConn: run case %d with %v", i, rtype)
+			err := testFunc(c, rtype)
+			if err != nil {
+				if c.shouldFail {
+					fmt.Printf("case %d failed as expected,%v\n", i, err)
+				} else {
+					t.Fatalf("case %d failed,%v", i, err)
+				}
 			} else {
-				t.Fatalf("case %d failed,%v", i, err)
+				if c.shouldFail {
+					t.Fatalf("case %d succeed but should fail", i)
+				}
 			}
-		} else {
-			if c.shouldFail {
-				t.Fatalf("case %d succeed but should fail", i)
-			}
+
 		}
 	}
 }
@@ -677,19 +691,23 @@ func TestRUDPConn(t *testing.T) {
 		},
 	}
 
-	testFunc := func(c testRUDPConnSingleCase) error {
-		_, _, err := testCreateVETHLink(testifA, testifB)
+	testFunc := func(c testRUDPConnSingleCase, relayType etherconn.RelayType) error {
+		err := testCreateVETHLink(testifA, testifB)
 		if err != nil {
 			return err
 		}
-		peerA, err := etherconn.NewRawSocketRelay(context.Background(), testifA,
+		peerA, err := getRawRelay(context.Background(), relayType, testifA,
 			etherconn.WithDebug(true))
+		// peerA, err := etherconn.NewRawSocketRelay(context.Background(), testifA,
+		// 	etherconn.WithDebug(true))
 		if err != nil {
 			return err
 		}
 		defer peerA.Stop()
-		peerB, err := etherconn.NewRawSocketRelay(context.Background(), testifB,
+		peerB, err := getRawRelay(context.Background(), relayType, testifB,
 			etherconn.WithDebug(true))
+		// peerB, err := etherconn.NewRawSocketRelay(context.Background(), testifB,
+		// 	etherconn.WithDebug(true))
 		if err != nil {
 			return err
 		}
@@ -719,7 +737,7 @@ func TestRUDPConn(t *testing.T) {
 		}
 		maxSize := 1000
 		for i := 0; i < 10; i++ {
-			p := testGenDummyIPbytes(maxSize-rand.Intn(maxSize-100), true)
+			p := testGenDummyIPbytes(maxSize-mathrand.Intn(maxSize-100), true)
 			fmt.Printf("send packet with length %d\n", len(p))
 			_, err := rudpA.WriteTo(p, &net.UDPAddr{IP: c.BIP, Zone: "udp", Port: c.BPort})
 			if err != nil {
@@ -742,16 +760,23 @@ func TestRUDPConn(t *testing.T) {
 		return nil
 	}
 	for i, c := range testCaseList {
-		err := testFunc(c)
-		if err != nil {
-			if c.shouldFail {
-				fmt.Printf("case %d failed as expected,%v\n", i, err)
+		rtlist := []etherconn.RelayType{etherconn.RelayTypeAFP, etherconn.RelayTypePCAP}
+		if runtime.GOOS == "windows" {
+			rtlist = []etherconn.RelayType{etherconn.RelayTypePCAP}
+		}
+		for _, rtype := range rtlist {
+			t.Logf("runing case %d with %v", i, rtype)
+			err := testFunc(c, rtype)
+			if err != nil {
+				if c.shouldFail {
+					fmt.Printf("case %d failed as expected,%v\n", i, err)
+				} else {
+					t.Fatalf("case %d failed,%v", i, err)
+				}
 			} else {
-				t.Fatalf("case %d failed,%v", i, err)
-			}
-		} else {
-			if c.shouldFail {
-				t.Fatalf("case %d succeed but should fail", i)
+				if c.shouldFail {
+					t.Fatalf("case %d succeed but should fail", i)
+				}
 			}
 		}
 	}

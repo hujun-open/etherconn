@@ -1,3 +1,4 @@
+// This is a packet sender/receiver using etherconn
 package main
 
 import (
@@ -15,27 +16,8 @@ import (
 	"time"
 
 	mv "github.com/RobinUS2/golang-moving-average"
+	"github.com/hujun-open/etherconn"
 )
-
-type Driver int
-
-const (
-	DriverUDPSocket Driver = iota
-	DriverEtherConn
-	DriverEtherConnXDP
-)
-
-func (d *Driver) LoadFromStr(s string) error {
-	switch s {
-	case "etherxdp":
-		*d = DriverEtherConnXDP
-	case "raw":
-		*d = DriverEtherConn
-	default:
-		return fmt.Errorf("unknown driver %v", s)
-	}
-	return nil
-}
 
 type TrafficInterface interface {
 	GetCounters() (numSend, numRcv uint64)
@@ -110,7 +92,7 @@ func main() {
 	mode := flag.String("m", ModeRecv, fmt.Sprintf("%v|%v", ModeSender, ModeRecv))
 	xdpFrameSize := flag.Uint("xdpframesize", defaultMaxXDPFrameSize, "XDP UMEM chunk size, 2048 or 4096")
 	xdpnumframe := flag.Uint("xdpnumchunk", defaultNumXDPUMEMChunk, "number of XDP UMEM chunk")
-	useDriver := flag.String("eng", "raw", "fwd engine: raw|etherxdp")
+	relayType := flag.String("eng", string(etherconn.RelayTypeAFP), fmt.Sprintf("%v|%v|%v", etherconn.RelayTypeAFP, etherconn.RelayTypePCAP, etherconn.RelayTypeXDP))
 	profiling := flag.Bool("profile", false, "enable profiling")
 	numEngine := flag.Uint("numeng", 1, "number of raw engine")
 	relayRcvChanDepth := flag.Uint("relayrcvchandepth", 65536, "rcv channel depth")
@@ -126,10 +108,7 @@ func main() {
 	if *numEngine == 0 {
 		log.Fatal("numeng can't be zero")
 	}
-	driver := new(Driver)
-	if err := driver.LoadFromStr(*useDriver); err != nil {
-		log.Fatal(err)
-	}
+
 	if *xdpFrameSize != 2048 && *xdpFrameSize != 4096 {
 		log.Fatalf("XDP chunk size could only be either 2048 or 4096, but %d is specified", *xdpFrameSize)
 	}
@@ -165,7 +144,7 @@ func main() {
 		if *recvifname == "" {
 			log.Fatal("recv interface name must be specified")
 		}
-		rcvIF, err = NewECInterface(rcvCTX, *recvifname, *xdpFrameSize, *xdpnumframe, *numEngine, *relayRcvChanDepth, *econRcvChanDepth, *doubleQ, *driver, *debug, *txBatchMode)
+		rcvIF, err = NewECInterface(rcvCTX, *recvifname, *xdpFrameSize, *xdpnumframe, *numEngine, *relayRcvChanDepth, *econRcvChanDepth, *doubleQ, etherconn.RelayType(*relayType), *debug, *txBatchMode)
 		if err != nil {
 			log.Fatalf("failed to create recv interface %v,%v", *recvifname, err)
 		}
@@ -175,7 +154,7 @@ func main() {
 		if *sendifname == "" {
 			log.Fatal("send interface name must be specified")
 		}
-		sendIF, err = NewECInterface(sendCTX, *sendifname, *xdpFrameSize, *xdpnumframe, *numEngine, *relayRcvChanDepth, *econRcvChanDepth, *doubleQ, *driver, *debug, *txBatchMode)
+		sendIF, err = NewECInterface(sendCTX, *sendifname, *xdpFrameSize, *xdpnumframe, *numEngine, *relayRcvChanDepth, *econRcvChanDepth, *doubleQ, etherconn.RelayType(*relayType), *debug, *txBatchMode)
 		if err != nil {
 			log.Fatalf("failed to create send interface %v,%v", *sendifname, err)
 		}

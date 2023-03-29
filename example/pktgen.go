@@ -1,9 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"math/big"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
 	"time"
 
@@ -28,7 +29,7 @@ type BatchTrafficConfig struct {
 	HostAddrOnly     bool
 }
 
-//Check if bc contains any invalid config
+// Check if bc contains any invalid config
 func (bc *BatchTrafficConfig) Check() error {
 	if (bc.StartDstIP.To4() == nil) != (bc.StartSrcIP.To4() == nil) {
 		return fmt.Errorf("src IP %v and dst IP %v are not same IP version", bc.StartSrcIP, bc.StartDstIP)
@@ -148,7 +149,7 @@ func generatePktConfigs(cfg *BatchTrafficConfig) ([]*PktConfig, error) {
 		}
 		plen := cfg.MinLen
 		if cfg.MinLen < cfg.MaxLen {
-			delta := rand.Int31n(int32(cfg.MaxLen) - int32(cfg.MinLen) + 1)
+			delta := mathrand.Int31n(int32(cfg.MaxLen) - int32(cfg.MinLen) + 1)
 			plen += uint(delta)
 		}
 		pktcfg := &PktConfig{
@@ -164,7 +165,7 @@ func generatePktConfigs(cfg *BatchTrafficConfig) ([]*PktConfig, error) {
 	return rlist, nil
 }
 
-//GenerateBatch generates a batch of packets accordign to cfg
+// GenerateBatch generates a batch of packets accordign to cfg
 func GenerateBatch(cfg *BatchTrafficConfig) (rlist [][]byte, err error) {
 	pktcfgList, err := generatePktConfigs(cfg)
 	if err != nil {

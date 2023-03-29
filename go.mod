@@ -1,11 +1,8 @@
 module github.com/hujun-open/etherconn
 
-go 1.17
-
-// replace github.com/asavie/xdp => ../xdp
+go 1.20
 
 require (
-	// github.com/asavie/xdp v0.3.3
 	github.com/asavie/xdp v0.3.4-0.20211113171712-711132ccc429
 	github.com/cilium/ebpf v0.4.0
 	github.com/google/gopacket v1.1.19
@@ -17,6 +14,6 @@ require (
 )
 
 require (
-	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df // indirect
+	github.com/vishvananda/netns v0.0.0-20210104183010-2eb08e3e575f // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 )

@@ -1,18 +1,3 @@
-/*EtherConn and RUDPConn are 1:1 mapping,which means two RUDPConn can't share same MAC+VLAN+EtherType combination;
-
-SharedEtherConn and SharingRUDPConn solve this issue:
-
-                                        L2Endpointkey-1
-    interface <---> PacketRelay <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-1)
-                                                       <---> SharingRUDPConn (L4Recvkey-2)
-                                                       <---> SharingRUDPConn (L4Recvkey-3)
-                                        L2Endpointkey-2
-                                <----> SharedEtherConn <---> SharingRUDPConn (L4Recvkey-4)
-                                                       <---> SharingRUDPConn (L4Recvkey-5)
-                                                       <---> SharingRUDPConn (L4Recvkey-6)
-
-For example, see the example folder of the repo.
-*/
 package etherconn
 
 import (
@@ -67,15 +52,6 @@ type SharedEtherConn struct {
 	relay                PacketRelay
 }
 
-// SharedEtherConnOption is the option to customize new SharedEtherConnOption
-type SharedEtherConnOption func(sec *SharedEtherConn)
-
-func WithSharedEConnPerClntRecvChanDepth(depth uint) SharedEtherConnOption {
-	return func(sec *SharedEtherConn) {
-		sec.perClntRecvChanDepth = depth
-	}
-}
-
 // NewSharedEtherConn creates a new SharedEtherConn;
 // mac is the SharedEtherConn's own MAC address;
 // relay is the underlying PacketRelay;
@@ -95,15 +71,24 @@ func NewSharedEtherConn(parentctx context.Context,
 	var ctx context.Context
 	ctx, r.cancelFunc = context.WithCancel(parentctx)
 	r.relay = relay
-	numRecvRoutine := 1
-	switch xrelay := relay.(type) {
-	case *XDPRelay:
-		numRecvRoutine = xrelay.NumSocket()
-	}
-	for i := 0; i < numRecvRoutine; i++ {
+	// numRecvRoutine := 1
+	// switch xrelay := relay.(type) {
+	// case *XDPRelay:
+	// 	numRecvRoutine = xrelay.NumSocket()
+	// }
+	for i := 0; i < getNumRecvRoutine(relay); i++ {
 		go r.recv(ctx)
 	}
 	return r
+}
+
+// SharedEtherConnOption is the option to customize new SharedEtherConnOption
+type SharedEtherConnOption func(sec *SharedEtherConn)
+
+func WithSharedEConnPerClntRecvChanDepth(depth uint) SharedEtherConnOption {
+	return func(sec *SharedEtherConn) {
+		sec.perClntRecvChanDepth = depth
+	}
 }
 
 // Close stop the SharedEtherConn
