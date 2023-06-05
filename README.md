@@ -1,5 +1,5 @@
 # etherconn
-![Build Status](https://github.com/hujun-open/etherconn/actions/workflows/main.yml/badge.svg)
+[![CI](https://github.com/hujun-open/etherconn/actions/workflows/main.yml/badge.svg)](https://github.com/hujun-open/etherconn/actions/workflows/main.yml)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/hujun-open/etherconn)](https://pkg.go.dev/github.com/hujun-open/etherconn)
 
 Package etherconn is a golang pkg that allow user to send/receive Ethernet
