@@ -24,6 +24,22 @@ const (
 	UnknownRelay  RelayType = "unknown"
 )
 
+// MarshalText implements encoding.TextMarshaler interface
+func (rt RelayType) MarshalText() (text []byte, err error) {
+	return []byte(rt), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler interface
+func (rt *RelayType) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "afpkt", "pcap", "xdp":
+		*rt = RelayType(text)
+		return nil
+	}
+	*rt = UnknownRelay
+	return nil
+}
+
 type rawRelayConn interface {
 	WritePacketData([]byte) error
 	ReadPacketData() ([]byte, gopacket.CaptureInfo, error)

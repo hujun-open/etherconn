@@ -874,3 +874,85 @@ func TestVLANs(t *testing.T) {
 	}
 
 }
+
+type testVLANsMarshalCase struct {
+	inputs         string
+	expectedResult etherconn.VLANs
+	shouldFail     bool
+}
+
+func (tvlanc *testVLANsMarshalCase) dotest() error {
+	r := new(etherconn.VLANs)
+	err := r.UnmarshalText([]byte(tvlanc.inputs))
+	if err != nil {
+		return err
+	}
+	if !r.Equal(tvlanc.expectedResult) {
+		return fmt.Errorf("result %v is different from expected: %v", r, tvlanc.expectedResult)
+	}
+	return nil
+}
+
+func TestVLANsUnMarhal(t *testing.T) {
+	testCaseList := []testVLANsMarshalCase{
+		//case 0,qinq with .
+		{
+			inputs: "33.22",
+			expectedResult: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        33,
+					EtherType: etherconn.DefaultVLANEtype,
+				},
+				&etherconn.VLAN{
+					ID:        22,
+					EtherType: etherconn.DefaultVLANEtype,
+				},
+			},
+		},
+		//case 0,qinq with |
+		{
+			inputs: "33|22",
+			expectedResult: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        33,
+					EtherType: etherconn.DefaultVLANEtype,
+				},
+				&etherconn.VLAN{
+					ID:        22,
+					EtherType: etherconn.DefaultVLANEtype,
+				},
+			},
+		},
+		//case 2,dot1q
+		{
+			inputs: "499",
+			expectedResult: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        499,
+					EtherType: etherconn.DefaultVLANEtype,
+				},
+			},
+		},
+		//case 3,negative case: out of range
+		{
+			inputs:     "4929.30",
+			shouldFail: true,
+		},
+		//case 3,negative case: not a number
+		{
+			inputs:     "33.aa",
+			shouldFail: true,
+		},
+	}
+	for i, c := range testCaseList {
+		t.Logf("test case %d", i)
+		err := c.dotest()
+		if err != nil {
+			if !c.shouldFail {
+				t.Fatalf("test case %d fails, %v", i, err)
+			} else {
+				t.Logf("case %d fails as expected, %v", i, err)
+			}
+		}
+	}
+}

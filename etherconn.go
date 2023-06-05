@@ -112,6 +112,8 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,6 +163,39 @@ func (vlans VLANs) String() string {
 		s += fmt.Sprintf("|%d", v.ID)
 	}
 	return s
+}
+
+// MarshalText implements encoding.TextMarshaler interface
+func (vlans VLANs) MarshalText() (text []byte, err error) {
+	return []byte(vlans.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler interface, it accepts two formats:
+// either "x.y" or "x|y",
+// and it uses the DefaultVLANEtype
+func (vlans *VLANs) UnmarshalText(text []byte) error {
+	sep := "|"
+	inputs := string(text)
+	if strings.Contains(inputs, ".") {
+		sep = "."
+	}
+	flist := strings.Split(inputs, sep)
+	r := new(VLANs)
+	for _, v := range flist {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("%v is not valid number", v)
+		}
+		if n < 0 || n > 4096 {
+			return fmt.Errorf("%d is not valid vlan number", n)
+		}
+		*r = append(*r, &VLAN{
+			ID:        uint16(n),
+			EtherType: DefaultVLANEtype,
+		})
+	}
+	*vlans = *r
+	return nil
 }
 
 // IDs return a VLAN IDs as a slice of uint16
