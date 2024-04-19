@@ -15,8 +15,8 @@ require (
 	github.com/cilium/ebpf v0.4.0 // indirect
 	github.com/safchain/ethtool v0.0.0-20201023143004-874930cb3ce0 // indirect
 	github.com/vishvananda/netns v0.0.0-20210104183010-2eb08e3e575f // indirect
-	golang.org/x/net v0.17.0 // indirect
-	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/net v0.23.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
 )
 
 replace github.com/hujun-open/etherconn => ../
