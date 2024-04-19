@@ -9,8 +9,8 @@ require (
 	github.com/hujun-open/myaddr v0.0.0-20200628224706-46a60dd3e36b
 	github.com/safchain/ethtool v0.0.0-20201023143004-874930cb3ce0
 	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/net v0.17.0
-	golang.org/x/sys v0.13.0
+	golang.org/x/net v0.23.0
+	golang.org/x/sys v0.18.0
 )
 
 require (
