@@ -153,6 +153,24 @@ type VLAN struct {
 	EtherType uint16
 }
 
+// MarshalBinary implements encoding.BinaryMarshaler interface
+func (vlan VLAN) MarshalBinary() (data []byte, err error) {
+	data = make([]byte, 4)
+	binary.BigEndian.PutUint16(data[:2], vlan.ID)
+	binary.BigEndian.PutUint16(data[2:4], vlan.EtherType)
+	return
+}
+
+// UnmarshalBinary implements encoding.BinaryUnmarshaler interface
+func (vlan *VLAN) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return fmt.Errorf("can't unmarshal VLAN from a byte slice less than 4 bytes")
+	}
+	vlan.ID = binary.BigEndian.Uint16(data[:2])
+	vlan.EtherType = binary.BigEndian.Uint16(data[2:4])
+	return nil
+}
+
 // VLANs is a slice of VLAN
 type VLANs []*VLAN
 
@@ -163,6 +181,31 @@ func (vlans VLANs) String() string {
 		s += fmt.Sprintf("|%d", v.ID)
 	}
 	return s
+}
+
+// MarshalBinary implements encoding.BinaryMarshaler interface
+func (vlans VLANs) MarshalBinary() (data []byte, err error) {
+	for _, v := range vlans {
+		b, _ := v.MarshalBinary()
+		data = append(data, b...)
+	}
+	return
+}
+
+// UnmarshalBinary implements encoding.BinaryUnmarshaler interface
+func (vlans *VLANs) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return fmt.Errorf("can't unmarshal VLANs from a byte slice less than 4 bytes")
+	}
+	*vlans = []*VLAN{}
+	for start := 0; start+4 <= len(data); start += 4 {
+		v := new(VLAN)
+		if err := v.UnmarshalBinary(data[start : start+4]); err != nil {
+			return err
+		}
+		*vlans = append(*vlans, v)
+	}
+	return nil
 }
 
 // MarshalText implements encoding.TextMarshaler interface

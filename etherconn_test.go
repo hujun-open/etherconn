@@ -786,6 +786,7 @@ func TestRUDPConn(t *testing.T) {
 // newIDs is the value for SetIDs, newv is the new VLANs after setIDs
 type testVLANsCase struct {
 	v          etherconn.VLANs
+	vbs        []byte
 	vs         string
 	umvs       string
 	newIDs     []uint16
@@ -803,6 +804,7 @@ func TestVLANs(t *testing.T) {
 				},
 			},
 			vs:     "|300",
+			vbs:    []byte{0x1, 0x2c, 0x81, 0},
 			newIDs: []uint16{111},
 			newv: etherconn.VLANs{
 				&etherconn.VLAN{
@@ -881,6 +883,34 @@ func TestVLANs(t *testing.T) {
 					EtherType: 0x8200,
 				},
 			},
+			vbs:    []byte{0, 100, 0x81, 0, 0, 200, 0x82, 0},
+			vs:     "|100|200",
+			umvs:   "100|200",
+			newIDs: []uint16{111, 222},
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+				&etherconn.VLAN{
+					ID:        222,
+					EtherType: 0x8200,
+				},
+			},
+		},
+		{
+			shouldFail: true,
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        100,
+					EtherType: 0x8100,
+				},
+				&etherconn.VLAN{
+					ID:        200,
+					EtherType: 0x8200,
+				},
+			},
+			vbs:    []byte{0, 100, 0x81, 0, 0, 200, 0x82},
 			vs:     "|100|200",
 			umvs:   "100|200",
 			newIDs: []uint16{111, 222},
@@ -922,6 +952,25 @@ func TestVLANs(t *testing.T) {
 		},
 	}
 	testFunc := func(c testVLANsCase) error {
+		if len(c.vbs) != 0 {
+			buf, err := c.v.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(buf, c.vbs) {
+				return fmt.Errorf("%v marshalbinary result %v is different from expected %v", c.v, buf, c.vbs)
+			}
+			newv := new(etherconn.VLANs)
+			err = newv.UnmarshalBinary(buf)
+			if err != nil {
+				return err
+			}
+			if !newv.Equal(c.v) {
+				return fmt.Errorf("%v unmarshalbinary result %v is different", c.v, newv)
+			}
+
+		}
+
 		if c.v.String() != c.vs {
 			return fmt.Errorf("c.v string %v is different from expected %v", c.v.String(), c.vs)
 		}
