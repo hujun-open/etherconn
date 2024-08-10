@@ -787,6 +787,7 @@ func TestRUDPConn(t *testing.T) {
 type testVLANsCase struct {
 	v          etherconn.VLANs
 	vs         string
+	umvs       string
 	newIDs     []uint16
 	newv       etherconn.VLANs
 	shouldFail bool
@@ -794,6 +795,56 @@ type testVLANsCase struct {
 
 func TestVLANs(t *testing.T) {
 	testCaseList := []testVLANsCase{
+		{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        300,
+					EtherType: 0x8100,
+				},
+			},
+			vs:     "|300",
+			newIDs: []uint16{111},
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+			},
+		},
+		{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        300,
+					EtherType: 0x8100,
+				},
+			},
+			vs:     "|300",
+			umvs:   ".300",
+			newIDs: []uint16{111},
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+			},
+		},
+		{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        300,
+					EtherType: 0x8100,
+				},
+			},
+			vs:     "|300",
+			umvs:   "300",
+			newIDs: []uint16{111},
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+			},
+		},
 		{
 			v: etherconn.VLANs{
 				&etherconn.VLAN{
@@ -806,6 +857,7 @@ func TestVLANs(t *testing.T) {
 				},
 			},
 			vs:     "|100|200",
+			umvs:   "100.200",
 			newIDs: []uint16{111, 222},
 			newv: etherconn.VLANs{
 				&etherconn.VLAN{
@@ -818,7 +870,31 @@ func TestVLANs(t *testing.T) {
 				},
 			},
 		},
-
+		{
+			v: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        100,
+					EtherType: 0x8100,
+				},
+				&etherconn.VLAN{
+					ID:        200,
+					EtherType: 0x8200,
+				},
+			},
+			vs:     "|100|200",
+			umvs:   "100|200",
+			newIDs: []uint16{111, 222},
+			newv: etherconn.VLANs{
+				&etherconn.VLAN{
+					ID:        111,
+					EtherType: 0x8100,
+				},
+				&etherconn.VLAN{
+					ID:        222,
+					EtherType: 0x8200,
+				},
+			},
+		},
 		{
 			v: etherconn.VLANs{
 				&etherconn.VLAN{
@@ -849,6 +925,18 @@ func TestVLANs(t *testing.T) {
 		if c.v.String() != c.vs {
 			return fmt.Errorf("c.v string %v is different from expected %v", c.v.String(), c.vs)
 		}
+		ustr := c.vs
+		if c.umvs != "" {
+			ustr = c.umvs
+		}
+		newvlan := new(etherconn.VLANs)
+		if err := newvlan.UnmarshalText([]byte(ustr)); err != nil {
+			return fmt.Errorf("failed to unmarshal %v, %w", c.vs, err)
+		}
+		if newvlan.String() != c.v.String() {
+			return fmt.Errorf("unmarshaled vlan %v is different from expected %v", newvlan.String(), c.v.String())
+		}
+
 		err := c.v.SetIDs(c.newIDs)
 		if err != nil {
 			return err

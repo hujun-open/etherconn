@@ -182,6 +182,9 @@ func (vlans *VLANs) UnmarshalText(text []byte) error {
 	flist := strings.Split(inputs, sep)
 	r := new(VLANs)
 	for _, v := range flist {
+		if v == "" {
+			continue
+		}
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			return fmt.Errorf("%v is not valid number", v)
