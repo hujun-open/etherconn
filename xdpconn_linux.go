@@ -246,9 +246,9 @@ func (s *xdpSock) recv(ctx context.Context) {
 				for i := 0; i < len(rxDescs); i++ {
 					pktData := make([]byte, len(s.sock.GetFrame(rxDescs[i])))
 					copy(pktData, s.sock.GetFrame(rxDescs[i]))
-					if s.relay.rxh != nil {
-						s.relay.rxh(pktData, s.qid)
-					}
+					// if s.relay.rxh != nil {
+					// 	s.relay.rxh(pktData, s.qid)
+					// }
 					handleRcvPkt(UnknownRelay, pktData, s.relay.stats, logf,
 						s.relay.recvList, s.relay.mirrorToDefault,
 						s.relay.defaultRecvChan, s.relay.multicastList, nil)
@@ -284,9 +284,9 @@ type XDPRelay struct {
 	defaultRecvChan   chan *RelayReceival
 	mirrorToDefault   bool
 	recvBytesChan     chan []byte
-	rxh, txh          XDPSocketPktHandler
-	sendingMode       XDPSendingMode
-	recvEtypes        []uint16
+	// rxh, txh          XDPSocketPktHandler
+	sendingMode XDPSendingMode
+	recvEtypes  []uint16
 }
 
 // XDPRelayOption could be used in NewXDPRelay to customize XDPRelay upon creation
@@ -400,18 +400,18 @@ func WithXDPExtProg(fname, prog, qmap, xskmap, etypemap string) XDPRelayOption {
 }
 
 // WithXDPRXPktHandler sets h as the rx packet handler
-func WithXDPRXPktHandler(h XDPSocketPktHandler) XDPRelayOption {
-	return func(relay *XDPRelay) {
-		relay.rxh = h
-	}
-}
+// func WithXDPRXPktHandler(h XDPSocketPktHandler) XDPRelayOption {
+// 	return func(relay *XDPRelay) {
+// 		relay.rxh = h
+// 	}
+// }
 
 // WithXDPTXPktHandler sets h as the tx packet handler
-func WithXDPTXPktHandler(h XDPSocketPktHandler) XDPRelayOption {
-	return func(relay *XDPRelay) {
-		relay.txh = h
-	}
-}
+// func WithXDPTXPktHandler(h XDPSocketPktHandler) XDPRelayOption {
+// 	return func(relay *XDPRelay) {
+// 		relay.txh = h
+// 	}
+// }
 
 const (
 	// DefaultXDPUMEMNumOfTrunk is the default number of UMEM trunks
@@ -611,7 +611,7 @@ func SetIfVLANOffloading(ifname string, enable bool) error {
 	return etool.Change(ifname, vlanoffloadingsetting)
 }
 
-const builtinProgFileName = "xdpethfilter_kern.o"
+// const builtinProgFileName = "xdpethfilter_kern.o"
 
 func loadEBPFProgViaReader(r io.ReaderAt, funcname, qidmapname, xskmapname, ethertypemap string) (*xdp.Program, *ebpf.Map, error) {
 	prog := new(xdp.Program)
@@ -633,7 +633,7 @@ func loadEBPFProgViaReader(r io.ReaderAt, funcname, qidmapname, xskmapname, ethe
 	if prog.Sockets, ok = col.Maps[xskmapname]; !ok {
 		return nil, nil, fmt.Errorf("can't find a socket map named %v", xskmapname)
 	}
-	var elist *ebpf.Map = nil
+	var elist *ebpf.Map
 	if elist, ok = col.Maps[ethertypemap]; !ok {
 		return nil, nil, fmt.Errorf("can't find a socket map named %v", xskmapname)
 	}

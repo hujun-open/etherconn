@@ -83,6 +83,9 @@ func getVLANsFromAncDataAFPkt(existList []uint16, auxdata []interface{}) []uint1
 	return r
 }
 
+// NewRawSocketRelayPcap creates a new RawSocketRelay instance using AF_PACKET socket , bound to the interface ifname,
+// optionally with RelayOption functions.
+// This function will put the interface in promisc mode, which means it requires root privilage.
 func NewRawSocketRelay(parentctx context.Context, ifname string, options ...RelayOption) (*RawSocketRelay, error) {
 	//NOTE:interface must be put in promisc mode, otherwise only pkt with real mac will be received
 	err := SetPromisc(ifname)
@@ -102,7 +105,7 @@ func NewRawSocketRelay(parentctx context.Context, ifname string, options ...Rela
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rawsocketrelay,%w", err)
 	}
-	return NewRawSocketRelayWithRelayConn(parentctx, ifname, conn, options...)
+	return newRawSocketRelayWithRelayConn(parentctx, ifname, conn, options...)
 
 }
 

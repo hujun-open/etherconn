@@ -65,11 +65,14 @@ func (pconn *PcapConn) isTimeout(err error) bool {
 	}
 }
 
+// NewRawSocketRelayPcap creates a new RawSocketRelay instance using libpcap, bound to the interface ifname,
+// optionally with RelayOption functions.
+// This function will put the interface in promisc mode, which means it requires root privilage.
 func NewRawSocketRelayPcap(parentctx context.Context, ifname string, options ...RelayOption) (*RawSocketRelay, error) {
 	conn, err := NewPcapConn(ifname)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rawsocketrelay,%w", err)
 	}
-	return NewRawSocketRelayWithRelayConn(parentctx, ifname, conn, options...)
+	return newRawSocketRelayWithRelayConn(parentctx, ifname, conn, options...)
 
 }

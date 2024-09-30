@@ -51,9 +51,9 @@ func getRawRelay(ctx context.Context, relayType etherconn.RelayType, ifname stri
 
 	switch relayType {
 	case etherconn.RelayTypePCAP:
-		return etherconn.NewRawSocketRelayPcap(context.Background(), ifname, mods...)
+		return etherconn.NewRawSocketRelayPcap(ctx, ifname, mods...)
 	case etherconn.RelayTypeAFP:
-		return etherconn.NewRawSocketRelay(context.Background(), ifname, mods...)
+		return etherconn.NewRawSocketRelay(ctx, ifname, mods...)
 
 	}
 	return nil, fmt.Errorf("%v is not a supported raw relay type", relayType)

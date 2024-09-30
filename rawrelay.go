@@ -52,7 +52,8 @@ type rawRelayConn interface {
 
 type LogFunc func(fmt string, a ...interface{})
 
-// RawSocketRelay implements PacketRelay interface, using AF_PACKET socket
+// RawSocketRelay implements PacketRelay interface, using AF_PACKET socket or libpcap.
+// use NewRawSocketRelayPcap or NewRawSocketRelay create new instances.
 type RawSocketRelay struct {
 	conn                 rawRelayConn
 	toSendChan           chan []byte
@@ -78,11 +79,11 @@ type RawSocketRelay struct {
 // RelayOption is a function use to provide customized option when creating RawSocketRelay
 type RelayOption func(*RawSocketRelay)
 
-// NewRawSocketRelay creates a new RawSocketRelay instance,
+// newRawSocketRelay creates a new RawSocketRelay instance,
 // bound to the interface ifname,
 // optionally along with RelayOption functions.
 // This function will put the interface in promisc mode, which means it requires root privilage
-func NewRawSocketRelayWithRelayConn(parentctx context.Context, ifname string, conn rawRelayConn, options ...RelayOption) (*RawSocketRelay, error) {
+func newRawSocketRelayWithRelayConn(parentctx context.Context, ifname string, conn rawRelayConn, options ...RelayOption) (*RawSocketRelay, error) {
 	r := &RawSocketRelay{}
 	var err error
 	r.ifName = ifname
@@ -198,6 +199,7 @@ func WithDefaultReceival(mirroring bool) RelayOption {
 	}
 }
 
+// Type returns rsr's type
 func (rsr *RawSocketRelay) Type() RelayType {
 	return rsr.conn.relayType()
 }

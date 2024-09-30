@@ -143,11 +143,13 @@ func (v6nd *IPv6ND) sendNA(reqsrc, target net.IP, targetmac, dstmac net.Hardware
 	}
 	respicmp6Layer.SetNetworkLayerForChecksum(iplayer)
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	gopacket.SerializeLayers(buf, opts,
+	err = gopacket.SerializeLayers(buf, opts,
 		iplayer,
 		respicmp6Layer,
 		resp)
-
+	if err != nil {
+		return err
+	}
 	_, err = v6nd.pktSendF(buf.Bytes(), dstmac)
 	return err
 }
@@ -213,11 +215,13 @@ func (v6nd *IPv6ND) probe(nei *Neighbor) (err error) {
 	}
 	respicmp6Layer.SetNetworkLayerForChecksum(iplayer)
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	gopacket.SerializeLayers(buf, opts,
+	err = gopacket.SerializeLayers(buf, opts,
 		iplayer,
 		respicmp6Layer,
 		resp)
-
+	if err != nil {
+		return err
+	}
 	_, err = v6nd.pktSendF(buf.Bytes(), GetMulticastMACfromIPv6Addr(nei.IPAddr))
 	return err
 
@@ -249,7 +253,7 @@ func (v6nd *IPv6ND) houseKeeping(ctx context.Context) {
 	}
 }
 
-//pkt is should be an IP packet
+// pkt is should be an IP packet
 func (v6nd *IPv6ND) handleNDPkt(pkt gopacket.Packet) error {
 	var mac net.HardwareAddr = nil
 	var addr, target netip.Addr
@@ -315,7 +319,7 @@ func (v6nd *IPv6ND) handleNDPkt(pkt gopacket.Packet) error {
 	return nil
 }
 
-//Resolve resolve addr to mac based on local list, if not found and activeProbe is true, then send probe
+// Resolve resolve addr to mac based on local list, if not found and activeProbe is true, then send probe
 func (v6nd *IPv6ND) Resolve(addr netip.Addr) net.HardwareAddr {
 	v6nd.listLock.RLock()
 	if nei, ok := v6nd.neiList[addr]; ok {
