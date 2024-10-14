@@ -147,10 +147,21 @@ const (
 	NOVLANTAG = 0xffff
 )
 
-// VLAN reprents a VLAN tag
+// VLAN reprents a VLAN tag.
+// Note: VLAN shouldn't be used directly, use VLANs instead even if there is only one tag
 type VLAN struct {
 	ID        uint16
 	EtherType uint16
+}
+
+// Equal return true if both v's ID and EtherType equals to vlan
+func (vlan VLAN) Equal(v VLAN) bool {
+	return v.ID == vlan.ID && v.EtherType == vlan.EtherType
+}
+
+// IsUnspecified return true if both vlan's ID and EtherType is zero
+func (vlan VLAN) IsUnspecified() bool {
+	return vlan.ID == 0 && vlan.EtherType == 0
 }
 
 // MarshalBinary implements encoding.BinaryMarshaler interface
@@ -163,8 +174,13 @@ func (vlan VLAN) MarshalBinary() (data []byte, err error) {
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler interface
 func (vlan *VLAN) UnmarshalBinary(data []byte) error {
+	if len(data) == 0 {
+		vlan.ID = 0
+		vlan.EtherType = 0
+		return nil
+	}
 	if len(data) < 4 {
-		return fmt.Errorf("can't unmarshal VLAN from a byte slice less than 4 bytes")
+		return fmt.Errorf("can't unmarshal VLAN from a byte slice less than 4 bytes, got %d bytes", len(data))
 	}
 	vlan.ID = binary.BigEndian.Uint16(data[:2])
 	vlan.EtherType = binary.BigEndian.Uint16(data[2:4])
@@ -194,8 +210,13 @@ func (vlans VLANs) MarshalBinary() (data []byte, err error) {
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler interface
 func (vlans *VLANs) UnmarshalBinary(data []byte) error {
+	if len(data) == 0 {
+		*vlans = []*VLAN{}
+		return nil
+	}
+
 	if len(data) < 4 {
-		return fmt.Errorf("can't unmarshal VLANs from a byte slice less than 4 bytes")
+		return fmt.Errorf("can't unmarshal VLANs from a byte slice less than 4 bytes, got %d bytes", len(data))
 	}
 	*vlans = []*VLAN{}
 	for start := 0; start+4 <= len(data); start += 4 {

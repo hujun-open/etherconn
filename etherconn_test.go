@@ -950,6 +950,13 @@ func TestVLANs(t *testing.T) {
 			},
 			shouldFail: true,
 		},
+		{
+			v:          etherconn.VLANs{},
+			vs:         "",
+			newIDs:     []uint16{},
+			newv:       etherconn.VLANs{},
+			shouldFail: false,
+		},
 	}
 	testFunc := func(c testVLANsCase) error {
 		if len(c.vbs) != 0 {
@@ -1028,6 +1035,68 @@ func (tvlanc *testVLANsMarshalCase) dotest() error {
 		return fmt.Errorf("result %v is different from expected: %v", r, tvlanc.expectedResult)
 	}
 	return nil
+}
+
+func TestVLANMarshalBinary(t *testing.T) {
+	type tcase struct {
+		vlan            etherconn.VLAN
+		expectedMarshal []byte
+		unmarshalBytes  []byte
+		shouldFail      bool
+	}
+	testcaseList := []tcase{
+		{
+			vlan: etherconn.VLAN{
+				ID:        33,
+				EtherType: etherconn.DefaultVLANEtype,
+			},
+			expectedMarshal: []byte{0, 33, 0x81, 0},
+		},
+		{
+			vlan:            etherconn.VLAN{},
+			expectedMarshal: []byte{0, 0, 0, 0},
+		},
+		{
+			vlan:            etherconn.VLAN{},
+			expectedMarshal: []byte{0, 0, 0, 0},
+			unmarshalBytes:  []byte{},
+		},
+	}
+	testFunc := func(c tcase) error {
+		buf, err := c.vlan.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(buf, c.expectedMarshal) {
+			return fmt.Errorf("marshal result %v is different from expected %v", buf, c.expectedMarshal)
+		}
+		if c.unmarshalBytes != nil {
+			newv := new(etherconn.VLAN)
+			err = newv.UnmarshalBinary(c.unmarshalBytes)
+			if err != nil {
+				return err
+			}
+			if newv == nil {
+				t.Log("newv is nil")
+			}
+			if !newv.Equal(c.vlan) {
+				return fmt.Errorf("unmarshaled result %v is different from original one %v", newv, c.vlan)
+			}
+
+		}
+		return nil
+	}
+	for i, c := range testcaseList {
+		t.Logf("test case %d", i)
+		err := testFunc(c)
+		if err != nil {
+			if !c.shouldFail {
+				t.Fatalf("test case %d fails, %v", i, err)
+			} else {
+				t.Logf("case %d fails as expected, %v", i, err)
+			}
+		}
+	}
 }
 
 func TestVLANsUnMarhal(t *testing.T) {
